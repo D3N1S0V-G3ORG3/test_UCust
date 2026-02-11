@@ -1,0 +1,44 @@
+erDiagram
+    USER_PROFILES ||--o{ PROJECT_METADATA : has
+    PROJECT_METADATA ||--o{ PUBLICATION_HISTORY : has
+    USER_PROFILES ||--o{ CONTENT_TASKS : has
+
+    USER_PROFILES {
+        int id PK
+        string external_user_id
+        json step1
+        json step2
+        json step3
+        json step4
+        json step5
+        datetime created_at
+    }
+
+    PROJECT_METADATA {
+        int id PK
+        int user_profile_id FK
+        string name
+        string niche
+        json platforms
+        datetime created_at
+    }
+
+    PUBLICATION_HISTORY {
+        int id PK
+        int project_id FK
+        string platform
+        text post_text
+        string status
+        json metadata
+        datetime published_at
+    }
+
+    CONTENT_TASKS {
+        int id PK
+        int user_profile_id FK
+        string status
+        text error_message
+        json result_payload
+        datetime created_at
+        datetime updated_at
+    }

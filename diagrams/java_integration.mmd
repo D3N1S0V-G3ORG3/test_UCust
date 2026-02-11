@@ -1,0 +1,20 @@
+sequenceDiagram
+    autonumber
+    participant Java as Java‑backend
+    participant API as FastAPI
+    participant Orchestrator as AgentOrchestrator
+    participant Bridge as JavaBridgeClient
+
+    Java->>API: POST /api/v1/process {user_id}
+    API-->>Java: 202 Accepted + job_id
+    Java->>API: GET /api/v1/status/{job_id}
+    API-->>Java: status/result
+
+    opt Optional outbound calls
+        Orchestrator->>Bridge: send_questionnaire()
+        Bridge-->>Java: JSON questionnaire
+        Orchestrator->>Bridge: send_post_draft()
+        Bridge-->>Java: JSON post draft
+        Orchestrator->>Bridge: send_kandinsky_prompt()
+        Bridge-->>Java: JSON prompt
+    end

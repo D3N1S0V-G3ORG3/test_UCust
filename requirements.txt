@@ -1,0 +1,29 @@
+# Multi-agent Marketing System - Python dependencies
+# Compatible version ranges are used to allow safe minor/patch updates.
+
+# Backend / API
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+pydantic>=2.0.0
+python-dotenv>=1.0.0
+
+# Integrations (Telegram / VK)
+telethon>=1.30.0
+vk-api>=11.9.0
+
+# AI / Processing
+openai>=1.0.0
+pillow>=10.0.0
+numpy>=1.24.0
+
+# Database
+sqlalchemy>=2.0.0
+
+# Standard Library Note
+# logging is part of Python standard library and is not installed via pip.
+
+# Dev Tools (contributors)
+pytest>=7.4.0
+black>=23.0.0
+flake8>=6.0.0
+mypy>=1.5.0

@@ -1,0 +1,30 @@
+sequenceDiagram
+    autonumber
+    participant Client as Java‑site
+    participant API as FastAPI
+    participant Repo as Storage Repository
+    participant SQL as PostgreSQL
+    participant Orchestrator as AgentOrchestrator
+    participant Agents as Agents Chain
+
+    Client->>API: POST /api/v1/process {user_id}
+    API->>Repo: get_user_questionnaire(user_id)
+    Repo->>SQL: SELECT user_profiles
+    SQL-->>Repo: questionnaire
+    Repo-->>API: questionnaire
+    API->>Repo: create_content_task(PENDING)
+    Repo->>SQL: INSERT content_tasks
+    SQL-->>Repo: job_id
+    Repo-->>API: job_id
+    API-->>Client: 202 Accepted + job_id
+
+    par Background task
+        API->>Repo: update_content_task_status(PROCESSING)
+        Repo->>SQL: UPDATE content_tasks
+        API->>Orchestrator: run(context)
+        Orchestrator->>Agents: Agent_Interviewer → Agent_Analyst → Agent_Copywriter → Agent_Visual_Director
+        Agents-->>Orchestrator: context + logs
+        Orchestrator-->>API: context
+        API->>Repo: update_content_task_status(COMPLETED, result_payload)
+        Repo->>SQL: UPDATE content_tasks
+    end

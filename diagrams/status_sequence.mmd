@@ -1,0 +1,13 @@
+sequenceDiagram
+    autonumber
+    participant Client as Java‑site
+    participant API as FastAPI
+    participant Repo as Storage Repository
+    participant SQL as PostgreSQL
+
+    Client->>API: GET /api/v1/status/{job_id}
+    API->>Repo: get_task_status(job_id)
+    Repo->>SQL: SELECT content_tasks
+    SQL-->>Repo: task
+    Repo-->>API: task
+    API-->>Client: status + result/error
