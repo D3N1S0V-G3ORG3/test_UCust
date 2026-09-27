@@ -1,4 +1,4 @@
-# 📘 UCust AI Service Gateway — Руководство по интеграции для Бэкенда (v2.6.0)
+# 📘 UCust AI Service Gateway — Руководство по интеграции для Бэкенда (v2.7.0)
 
 Полная техническая спецификация подключения основного бэкенда (Java Spring / Node.js / Go / Python) к микросервису **UCust AI Gateway**.
 
@@ -6,12 +6,13 @@
 
 ## 1. Архитектурный обзор и варианты подключения
 
-Микросервис **UCust AI** предоставляет единую платформу для анализа брендов, извлечения Brand DNA, многоуровневого векторного поиска (Clean RAG на pgvector), генерации контента для социальных сетей (Telegram 7.2+, VK) и отложенного рендеринга визуалов на ComfyUI (SDXL / FLUX).
+Микросервис **UCust AI** предоставляет единую платформу для анализа брендов, извлечения Brand DNA, многоуровневого векторного поиска (Clean RAG с Multi-Tenant изоляцией), генерации контента для социальных сетей (Telegram 7.2+, VK), промпт-инжиниринга визуалов нового поколения (**Qwen-Image 2512** / ComfyUI), аудита качества (**Charlie Munger 2.0**) и смарт-банка идей с защитой воронок продаж.
 
 ```mermaid
 flowchart TD
-    subgraph Client["Frontend / Client Applications"]
-        UI["React / Web / Telegram Mini App"]
+    subgraph Client["Frontend / Client Applications (Linear / Stripe Style)"]
+        UI["React / Next.js / Web / Telegram Mini App"]
+        IdeaUI["Smart Placeholders & Quick Idea Bank Drawer"]
     end
 
     subgraph Backend["Main Backend (Java Spring / Node.js / Go)"]
@@ -22,20 +23,22 @@ flowchart TD
     subgraph AI_Gateway["UCust AI Gateway (FastAPI :8000)"]
         Auth["X-Internal-Secret / JWT Guard"]
         Orch["Unified Orchestrator"]
-        Endpoints["REST Facades (51 routes)"]
+        Endpoints["REST Facades (54 routes)"]
+        IdeaEngine["Smart Idea Bank & Funnel Advisor"]
     end
 
     subgraph Workers["Asynchronous Celery Workers"]
-        CPU_Q["Queue: ucust_ai_queue<br/>(Scraping, RAG, Saiga LLM, Onboarding)"]
-        GPU_Q["Queue: ucust_gpu_render<br/>(ComfyUI / SDXL / FLUX Lazy Render)"]
+        CPU_Q["Queue: ucust_ai_queue<br/>(Scraping, RAG, Saiga LLM, Munger Critic)"]
+        GPU_Q["Queue: ucust_gpu_render<br/>(Qwen-Image 2512 / ComfyUI AuraFlow)"]
     end
 
     subgraph Storage["Databases & Caches"]
         PG["PostgreSQL 16 + pgvector<br/>(Tenant-Isolated Knowledge)"]
-        Redis["Redis 7 (Queues & Trends Cache)"]
+        Redis["Redis 7 (Queues, Trends & Lock Cache)"]
     end
 
-    UI -->|User Actions| MB
+    UI -->|User Actions & Edits| MB
+    IdeaUI -->|Dynamic Placeholders & Bank| MB
     MB -->|HTTP REST + X-Internal-Secret| AI_Gateway
     AI_Gateway --> Auth
     Auth --> Orch
@@ -66,7 +69,9 @@ flowchart TD
 
 ### Сценарий 1: Human-in-the-Loop (HITL) Онбординг проекта (5 Экранов)
 
-Процесс регистрации проекта в системе разделен на два изолированных этапа, что позволяет SMM-специалисту проверять и корректировать сгенерированный ИИ профиль до его записи в постоянную память.
+Процесс регистрации проекта в системе разделен на два изолированных этапа:
+1. **Анализ и предзаполнение черновика:** Парсинг сайта, соцсетей, извлечение палитры и SWOT.
+2. **Верификация и коммит:** Человек проверяет данные, после чего профиль векторизуется с изоляцией по `tenant_id`.
 
 ```mermaid
 sequenceDiagram
@@ -101,52 +106,13 @@ sequenceDiagram
     Backend-->>Frontend: Проект активирован, готов к генерации!
 ```
 
-#### Структура данных 5 экранов онбординга (`ProjectProfileDraft`):
-
-```json
-{
-  "about": {
-    "name": "Кофейня Аромат Зерен",
-    "niche": "Спешелти кофейня и пекарня",
-    "positioning": "Свежеобжаренное зерно категории Specialty и ремесленные круассаны",
-    "website_url": "https://coffee-beans-example.ru",
-    "telegram_channel": "https://t.me/coffee_beans_example"
-  },
-  "market": {
-    "target_audience": "Жители и сотрудники бизнес-центров 22-45 лет, ценящие качественный кофе",
-    "audience_segments": ["Офисные сотрудники (takeaway)", "Фрилансеры (работа в зале)", "Ценители specialty"],
-    "key_pain_points": ["Горький кофе из автоматов", "Медленное обслуживание в утренний час пик"],
-    "competitors": ["Surf Coffee", "Даблби", "Stars Coffee"]
-  },
-  "swot": {
-    "strengths": ["Собственная обжарка", "Удобное расположение", "Свежая выпечка каждые 2 часа"],
-    "weaknesses": ["Небольшой зал (25 мест)", "Отсутствие полноценной кухни горячих блюд"],
-    "opportunities": ["Запуск подписки на зерно домой", "B2B поставки в соседние офисы"],
-    "threats": ["Рост цен на зеленое зерно", "Открытие федеральной сети рядом"]
-  },
-  "services": [
-    {
-      "name": "Авторский напиток: Хвойный латте",
-      "description": "Эспрессо на зерне Эфиопия с добавлением натурального сиропа из молодых шишек и брусники",
-      "price_range": "380 ₽ (350 мл)",
-      "usp": "100% натуральные сиропы собственного приготовления без красителей"
-    }
-  ],
-  "goals": {
-    "content_goals": ["Рост узнаваемости в районе", "Увеличение продаж десертов", "Анонсы сезонного меню"],
-    "tone_of_voice": ["Теплый", "Гостеприимный", "Экспертный", "Лаконичный"],
-    "forbidden_topics": ["Политика", "Сравнение в лоб с конкурентами", "Скидочный агрессивный маркетинг"]
-  }
-}
-```
-
 ---
 
-### Сценарий 2: Core Value Loop генерации контента (Telegram 7.2+ & Lazy Rendering)
+### Сценарий 2: Генерация контента (Telegram 7.2+, Qwen-Image 2512 & Charlie Munger 2.0)
 
-Генерация контента построена на архитектуре **двухфазного рендеринга (Lazy Rendering)** для минимизации GPU-расходов:
-1. **Фаза 1 (Текст + Визуальный бриф):** Выполняется за 0.5–1.5 сек на CPU/Saiga LLM. Стоимость GPU = **0 VRAM**. Возвращается `PostDraft` со статусом `DRAFT_TEXT` и собранной спецификацией `ImageGenerationSpec`.
-2. **Фаза 2 (Рендер изображения):** Запускается только после подтверждения пользователем в UI или по таймеру публикации через очередь `ucust_gpu_render`.
+Генерация контента построена на архитектуре **двухфазного рендеринга (Lazy Rendering)**:
+1. **Фаза 1 (Текст + Pre-Mortem + Визуальный промпт):** Выполняется за 0.4–1.2 сек. Стоимость GPU = **0 VRAM**. Возвращается `PostDraft` со статусом `DRAFT_TEXT` и структурированным 6-компонентным промптом под **Qwen-Image 2512**.
+2. **Фаза 2 (Рендер изображения):** Запускается только по запросу пользователя или таймеру публикации в очереди `ucust_gpu_render` с параметрами сэмплера `ModelSamplingAuraFlow (shift=3.10)` и `VAEDecodeTiled (512/64)`.
 
 ```mermaid
 sequenceDiagram
@@ -155,34 +121,42 @@ sequenceDiagram
     participant AI_CPU as Celery Worker (CPU)
     participant RAG as Clean RAG (pgvector)
     participant Saiga as Saiga LLM (Text Engine)
+    participant Critic as Charlie Munger 2.0
     participant AI_GPU as Celery Worker (GPU / ComfyUI)
 
     Backend->>AI_CPU: generate_post_draft_task(project_id, topic, aspect_ratio)
-    AI_CPU->>RAG: Ретривер фактов (tenant_id = project_id) + bge-reranker
+    AI_CPU->>RAG: Мульти-тенантный поиск фактов (tenant_id)
     RAG-->>AI_CPU: Топ-3 релевантных факта о бренде
-    AI_CPU->>Saiga: Генерация текста (Telegram 7.2+ tags: <blockquote>, <tg-spoiler>, <code>)
-    Saiga-->>AI_CPU: Текст поста + Prompt для визуала
+    AI_CPU->>Saiga: Генерация текста (Telegram 7.2+ разметка)
+    Saiga-->>AI_CPU: Текст поста + Qwen-Image 2512 промпт
+    AI_CPU->>Critic: Инверсионный аудит (Score, Lexicon, Anti-Bleed, Substance)
+    Critic-->>AI_CPU: Score 0.85+ (APPROVED)
     AI_CPU-->>Backend: Webhook: status="success", post_draft (status="DRAFT_TEXT", vram=0)
     
     Note over Backend,AI_GPU: Пользователь нажал «Сгенерировать картинку» в UI
     Backend->>AI_GPU: render_post_task(post_id, dev_simulation=False)
-    AI_GPU->>AI_GPU: ComfyUI SDXL/FLUX Render (1024x1024)
+    AI_GPU->>AI_GPU: ComfyUI Qwen-Image 2512 Render (AuraFlow shift=3.10, CFG 3.5)
     AI_GPU-->>Backend: Webhook: status="rendered", rendered_image_urls=[http://.../img.png]
 ```
 
-#### Правила разметки Telegram 7.2+:
-- **Сворачиваемые цитаты:** `<blockquote expandable>текст деталей или цитаты</blockquote>`
-- **Спойлеры:** `<tg-spoiler>скрытый текст скидки или ответа</tg-spoiler>`
-- **Форматирование:** `<b>жирный</b>`, `<i>курсив</i>`, `<code>промокод</code>`
-- **Zero-Assumptions:** ИИ строго использует только факты из Brand DNA и RAG-памяти проекта.
-- **Эмодзи-гигиена:** Не более 2–3 смысловых акцентов на весь пост.
+---
+
+### Сценарий 3: Смарт-банк идей, динамические плейсхолдеры и защита воронки
+
+Интерфейсно банк идей отделен от автоматического календаря воронки продаж, чтобы исключить затирание важных конверсионных постов вирусными темами:
+1. **Динамические подсказки в плейсхолдер:** `GET /api/v1/ideas/placeholders` подгружает 3–5 ситуативных тем из календаря праздников с поддержкой Tab-автозаполнения.
+2. **Банк быстрых идей:** `GET /api/v1/ideas/bank` отдает каталог инфоповодов с классификацией этапа воронки (`TOFU`/`MOFU`/`BOFU`) и углом подачи.
+3. **Советник размещения (Funnel Placement Advisor):** `POST /api/v1/ideas/evaluate-placement` проверяет, куда безопасно поставить тему (в черновик, внеплановый сторис или определенный слот). При попытке перезаписать активный BOFU-оффер вирусным мемом сервис возвращает статус `warning` с защитой воронки.
 
 ---
 
-## 4. Реестр ключевых эндпоинтов
+## 4. Реестр ключевых эндпоинтов (54 routes)
 
 | Группа | Метод и URL | Назначение |
 | :--- | :--- | :--- |
+| **Smart Idea Bank** | `GET /api/v1/ideas/placeholders` | Подгрузка контекстных тем в плейсхолдер поля ввода с поддержкой Tab-completion. |
+| **Smart Idea Bank** | `GET /api/v1/ideas/bank` | Каталог ситуативных инфоповодов (праздники СНГ, отраслевые дни) с воронкой. |
+| **Smart Idea Bank** | `POST /api/v1/ideas/evaluate-placement` | Оценка совместимости темы с воронкой и защита конверсионных слотов. |
 | **HITL Onboard** | `POST /api/v1/projects/analyze`<br>`POST /api/v1/parser/analyze` | **Фаза 1:** Сбор данных по ссылкам и генерация `ProjectProfileDraft` без записи в БД. |
 | **HITL Commit** | `POST /api/v1/projects/{project_id}/knowledge`<br>`POST /api/v1/projects/commit` | **Фаза 2:** Фиксация подтвержденного профиля в RAG/pgvector с тенантом `project_id`. |
 | **Orchestrator** | `POST /api/v1/task/execute`<br>`POST /api/v1/orchestrator/execute` | **Единый шлюз задач**. Маршрутизирует любую операцию по `task_type`. |
@@ -190,7 +164,9 @@ sequenceDiagram
 | **Async Tasks** | `POST /api/v1/ai/tasks/async-generate` | Асинхронная постановка задачи в очередь Celery с Push-вебхуком. |
 | **Task Status** | `GET /api/v1/ai/tasks/{task_id}/status` | Проверка статуса выполнения фоновой задачи. |
 | **Render Post** | `POST /api/v1/ai/tasks/render/{post_id}` | Запуск отложенного GPU-рендеринга для сгенерированного черновика. |
-| **RAG Query** | `POST /api/v1/ai/rag/query` | Семантический поиск по базе знаний с защитой от галлюцинаций. |
+| **RAG Query** | `POST /api/v1/ai/rag/query` | Семантический поиск по базе знаний с multi-tenant изоляцией. |
+| **Trends & Memes**| `GET /api/v1/ai/trends` | Быстрая отдача кэшированных трендов ниши (3–5 мс). |
+| **Critic Review** | `POST /api/v1/ai/critic/review` | Прямой аудит текста критиком Charlie Munger 2.0. |
 | **Observability** | `GET /metrics` | Экспорт Prometheus метрик (латентность, очереди, VRAM). |
 | **Health** | `GET /health` или `GET /api/v1/ai/health` | Проверка жизнеспособности сервиса и загруженных моделей. |
 
@@ -198,110 +174,56 @@ sequenceDiagram
 
 ## 5. Готовые примеры интеграционных запросов
 
-### Пример 1: Анализ источников для онбординга (`POST /api/v1/projects/analyze`)
+### Пример 1: Получение динамических плейсхолдеров (`GET /api/v1/ideas/placeholders`)
 
 ```http
-POST http://<AI_HOST>:8000/api/v1/projects/analyze
-Content-Type: application/json
+GET http://<AI_HOST>:8000/api/v1/ideas/placeholders?niche=IT&company_name=DevPulse&limit=3
 X-Internal-Secret: ucust-super-secret-service-token-2026
-```
-
-```json
-{
-  "company_name": "Specialty Coffee Roasters",
-  "niche": "Спешелти кофейня и обжарка",
-  "website_url": "https://coffee-example.ru",
-  "telegram_channel": "https://t.me/coffee_roasters_spb",
-  "raw_notes": "Специализируемся на светлой обжарке Эфиопии и Колумбии. Скидка 15% на первый заказ зерна."
-}
 ```
 
 **Ответ (HTTP 200):**
 ```json
 {
   "status": "success",
-  "profile_draft": {
-    "about": {
-      "name": "Specialty Coffee Roasters",
-      "niche": "Спешелти кофейня и обжарка",
-      "positioning": "Светлая обжарка кофе категории Specialty",
-      "website_url": "https://coffee-example.ru",
-      "telegram_channel": "https://t.me/coffee_roasters_spb"
+  "niche": "IT",
+  "company_name": "DevPulse",
+  "placeholders": [
+    {
+      "placeholder_text": "💡 Идея (через 8 дн.): День программиста — как команда DevPulse встречает этот день?",
+      "suggested_topic": "День программиста: как DevPulse встречает праздник и что приготовил для клиентов",
+      "source_type": "calendar",
+      "funnel_stage": "TOFU",
+      "hint": "Нажмите Tab для автозаполнения"
     },
-    "market": {
-      "target_audience": "Ценители яркого спешелти кофе и фильтр-заваривания",
-      "audience_segments": ["Домашние брюверы", "Гости кофейни"],
-      "key_pain_points": ["Темная пережаренная коммерческая арабика"],
-      "competitors": ["Восход Кофе", "Торрефакто"]
-    },
-    "swot": {
-      "strengths": ["Прямой импорт микролотов", "Свежая обжарка"],
-      "weaknesses": ["Узкая ниша"],
-      "opportunities": ["B2B поставки в офисы"],
-      "threats": ["Колебания курса валют на зеленое зерно"]
-    },
-    "services": [
-      {
-        "name": "Зерно Эфиопия Иргачефф 250г",
-        "description": "Ноты бергамота, жасмина и спелого персика",
-        "price_range": "850 ₽",
-        "usp": "Обжарка под фильтр за 48 часов до отправки"
-      }
-    ],
-    "goals": {
-      "content_goals": ["Рост продаж зерна онлайн"],
-      "tone_of_voice": ["Экспертный", "Дружелюбный"],
-      "forbidden_topics": ["Политика", "Сравнения в лоб"]
+    {
+      "placeholder_text": "💡 Идея: 3 скрытые ошибки в CI/CD пайплайне, сжигающие бюджет команды",
+      "suggested_topic": "Разбор кейса: как оптимизация тестов сократила время деплоя на 60%",
+      "source_type": "evergreen",
+      "funnel_stage": "MOFU",
+      "hint": "Нажмите Tab для B2B разбора"
     }
-  }
+  ]
 }
 ```
 
 ---
 
-### Пример 2: Фиксация профиля в Базе Знаний (`POST /api/v1/projects/project_101/knowledge`)
+### Пример 2: Проверка безопасности размещения в воронку (`POST /api/v1/ideas/evaluate-placement`)
 
 ```http
-POST http://<AI_HOST>:8000/api/v1/projects/project_101/knowledge
+POST http://<AI_HOST>:8000/api/v1/ideas/evaluate-placement
 Content-Type: application/json
 X-Internal-Secret: ucust-super-secret-service-token-2026
 ```
 
 ```json
 {
-  "project_id": "project_101",
-  "profile": {
-    "about": {
-      "name": "Specialty Coffee Roasters",
-      "niche": "Спешелти кофейня и обжарка",
-      "positioning": "Светлая обжарка кофе категории Specialty"
-    },
-    "market": {
-      "target_audience": "Ценители яркого спешелти кофе",
-      "audience_segments": ["Домашние брюверы"],
-      "key_pain_points": ["Темная пережаренная арабика"],
-      "competitors": ["Восход Кофе"]
-    },
-    "swot": {
-      "strengths": ["Прямой импорт микролотов"],
-      "weaknesses": ["Узкая ниша"],
-      "opportunities": ["B2B поставки в офисы"],
-      "threats": ["Рост курса валют"]
-    },
-    "services": [
-      {
-        "name": "Зерно Эфиопия Иргачефф 250г",
-        "description": "Ноты бергамота и персика",
-        "price_range": "850 ₽",
-        "usp": "Свежая обжарка"
-      }
-    ],
-    "goals": {
-      "content_goals": ["Рост продаж зерна онлайн"],
-      "tone_of_voice": ["Экспертный", "Дружелюбный"],
-      "forbidden_topics": ["Политика"]
-    }
-  }
+  "topic": "Всемирный день кошек: веселые фотографии пушистых питомцев команды",
+  "niche": "IT / Разработка",
+  "company_name": "DevPulse",
+  "target_slot_date": "2026-10-02",
+  "target_slot_type": "BOFU_CONVERSION_OFFER",
+  "is_override_scheduled_slot": true
 }
 ```
 
@@ -309,9 +231,20 @@ X-Internal-Secret: ucust-super-secret-service-token-2026
 ```json
 {
   "status": "success",
-  "project_id": "project_101",
-  "message": "База знаний проекта 'project_101' успешно обновлена и проиндексирована в Clean RAG",
-  "indexed_chunks": 5
+  "verdict": {
+    "is_funnel_safe": false,
+    "placement_status": "warning",
+    "detected_funnel_stage": "TOFU_UNAWARE",
+    "recommended_target": "draft",
+    "marketing_framework": "BAB",
+    "cta_guidance": "Мягкое вовлечение / Реакции (Без прямого жесткого CTA на покупку)",
+    "explanation": "⚠️ Внимание: Выбранный слот в календаре предназначен для конверсии и продаж (BOFU_CONVERSION_OFFER), а тема «Всемирный день кошек» является вирусной/охватной (TOFU). Прямая замена разрушит прогрев аудитории. Рекомендуем сохранить идею в черновики или опубликовать как внеплановый сторис/пост выходного дня.",
+    "alternative_slots": [
+      "draft",
+      "unscheduled_story",
+      "weekend_lifestyle_slot"
+    ]
+  }
 }
 ```
 
@@ -374,12 +307,22 @@ X-UCust-Signature: sha256=d3b07384d113edec49eaa6238ad5ff00...
       "brand_id": "project_101",
       "status": "draft_text",
       "text_content": "☕ <b>Секрет идеальной экстракции светлой обжарки</b>\n\nПочему вода 100°C может испортить чашку, а 92°C раскроет букет?\n\n<blockquote expandable>\nСветлая обжарка сохраняет органические кислоты и деликатные эфирные масла. При температуре 91-93°C вы получаете баланс цитрусовой сладости без излишней терпкости.\n</blockquote>\n\nПромокод на кофе недели: <code>LIGHT2026</code> (скидка 15%).",
+      "critic_score": 0.95,
+      "critic_verdict": "APPROVED",
       "image_specs": [
         {
-          "prompt": "cinematic commercial shot, specialty coffee, brewing filter v60 kettle pour, soft morning sunlight, 8k",
+          "prompt": "A commercial photograph of artisan ceramic cup with silky velvety microfoam latte art resting on a smooth travertine surface. In the foreground, vibrant green leaf frames the shot. Shot on 85mm f/1.8 macro lens with creamy shallow depth of field, tactile material micro-textures, zero CGI.",
+          "negative_prompt": "blurry, low quality, pixelated, distorted, watermark, oversaturated, plastic-looking, 3D render, CGI, cartoon, anime",
           "aspect_ratio": "1:1",
           "width": 1024,
-          "height": 1024
+          "height": 1024,
+          "sampling_config": {
+            "sampler": "euler",
+            "scheduler": "normal",
+            "shift": 3.10,
+            "cfg": 3.5,
+            "steps": 35
+          }
         }
       ],
       "rendered_image_urls": [],
@@ -408,5 +351,5 @@ python start_mock.py
 ```
 
 - Mock-сервер поднимается на порту `8000` (`http://localhost:8000`).
-- Полностью реализует все 51 контрактных эндпоинта (включая `/api/v1/projects/analyze`, `/api/v1/projects/{project_id}/knowledge`, `/api/v1/task/execute`, `/metrics`).
+- Полностью реализует все **54 контрактных эндпоинта** (включая `/api/v1/ideas/placeholders`, `/api/v1/ideas/bank`, `/api/v1/ideas/evaluate-placement`, `/api/v1/projects/analyze`, `/api/v1/projects/{project_id}/knowledge`, `/api/v1/task/execute`, `/metrics`).
 - Возвращает мгновенные валидные ответы, имитирует задержки очередей и отправляет тестовые Webhook-коллбэки на указанный `callback_url`.
