@@ -548,7 +548,10 @@ class ComfyCLIRunner:
             # 3. Остановка на Windows
             try:
                 import subprocess
-                out = subprocess.check_output('netstat -ano | findstr :8188', shell=True, text=True, errors='ignore')
+                try:
+                    out = subprocess.check_output('netstat -ano | findstr :8188', shell=True, text=True, errors='ignore')
+                except subprocess.CalledProcessError:
+                    out = ""
                 for line in out.strip().splitlines():
                     parts = line.strip().split()
                     if len(parts) >= 5 and "LISTENING" in parts:

@@ -1666,6 +1666,7 @@ class UnifiedOrchestrator:
             self._log_trace(session_id, "SaigaCopywriter", "PostGenerated", {"topic": prompt, "format": format_type})
             return {
                 "status": "success",
+                "text": clean_user_post_text,
                 "post_text": clean_user_post_text,
                 "post_text_html": post_text_html,
                 "post_text_tg_markdown": post_text_tg_md,
