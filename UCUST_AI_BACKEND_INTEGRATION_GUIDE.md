@@ -632,3 +632,846 @@ curl -X POST "http://localhost:8000/api/v1/ai/critic/review" \
   }
 }
 ```
+
+---
+
+## 9. Полный справочник всех 56 эндпоинтов (Описание + cURL + Примеры ответа)
+
+В этом разделе собраны все эндпоинты платформы, сгруппированные по функциональным модулям, с готовыми командами вызова и образцами возвращаемых данных.
+
+```
+Содержание справочника:
+9.1. Прямая оркестровка и Генерация контента (Direct Generation Bridge)
+9.2. Онбординг проектов и База знаний RAG (Projects & pgvector)
+9.3. Умный Банк Идей и Динамические Плейсхолдеры (Smart Idea Bank)
+9.4. Стратегия контента и Ленивый GPU-Рендер (Lazy Rendering Lifecycle)
+9.5. Контроль качества и Pre-Mortem аудит (Critic Charlie Munger 2.0)
+9.6. Мультимодальный анализ и Генерация изображений (Vision & Image Gen)
+9.7. Сборщики данных, Парсеры и Анализ сайтов/соцсетей (Collectors & Intel)
+9.8. Тренды и Рыночная аналитика (Trends & Analytics)
+9.9. Асинхронные очереди задач (Async Tasks & Celery)
+9.10. Системная диагностика, VRAM и Метрики (Diagnostics & Telemetry)
+9.11. Публикация достижений (Telegram Achievement Broadcaster)
+```
+
+---
+
+### 9.1. Прямая оркестровка и Генерация контента
+
+#### `POST /orchestration/generate` (Алиас: `/api/v1/orchestration/generate`)
+* **Назначение:** Главный сквозной шлюз генерации готового поста для SMM/Telegram (текст + теги + ТЗ для фото на Qwen-Image 2512).
+* **cURL:**
+```bash
+curl -X POST "http://localhost:8000/orchestration/generate" \
+  -H "Content-Type: application/json" \
+  -H "X-Internal-Secret: ucust-super-secret-service-token-2026" \
+  -d '{
+    "projectId": "coffee_project_01",
+    "companyName": "Surf Coffee",
+    "niche": "Кофейня",
+    "prompt": "Секрет идеальной экстракции светлой обжарки",
+    "promoCode": "SURF2026",
+    "tone": "Дружелюбный, стильный, экспертный",
+    "aspect_ratio": "1:1"
+  }'
+```
+* **Пример ответа (`200 OK`):**
+```json
+{
+  "status": "success",
+  "data": {
+    "project_id": "coffee_project_01",
+    "post_draft": {
+      "post_id": "post_a9103de4",
+      "status": "draft_text",
+      "text_content": "☕ <b>Секрет идеальной экстракции светлой обжарки</b>\n\nПочему вода 100°C может испортить чашку, а 92°C раскроет весь букет?\n\n<blockquote expandable>\nСветлая обжарка сохраняет органические кислоты. При температуре 91-93°C вы получаете баланс цитрусовой сладости без лишней горечи.\n</blockquote>\n\nПромокод недели: <code>SURF2026</code> (скидка 15%).",
+      "critic_score": 0.95,
+      "image_specs": [
+        {
+          "prompt": "A commercial photograph of ceramic cup with microfoam latte art on travertine table, morning soft light, 85mm lens, realistic texture.",
+          "aspect_ratio": "1:1",
+          "width": 1024,
+          "height": 1024
+        }
+      ]
+    }
+  }
+}
+```
+
+#### `POST /api/v1/orchestrator/execute` (Алиасы: `/api/v1/task/execute`, `/api/v1/ai/task`)
+* **Назначение:** Универсальный диспетчер оркестратора для запуска любой произвольной внутренней задачи (`quick_scan`, `generate_post`, `evaluate_placement`, `rag_query`, `analyze_documents`).
+* **cURL:**
+```bash
+curl -X POST "http://localhost:8000/api/v1/task/execute" \
+  -H "Content-Type: application/json" \
+  -H "X-Internal-Secret: ucust-super-secret-service-token-2026" \
+  -d '{
+    "task_type": "generate_post",
+    "user_id": "user_42",
+    "payload": {
+      "topic": "Топ 3 ошибки при выборе кофемашины",
+      "company_name": "Coffee Lab",
+      "niche": "Кофейное оборудование"
+    }
+  }'
+```
+* **Пример ответа (`200 OK`):**
+```json
+{
+  "status": "success",
+  "task_id": "task_e817bc10",
+  "task_type": "generate_post",
+  "data": {
+    "status": "success",
+    "post_draft": {
+      "post_id": "post_b172a91",
+      "text_content": "⚙️ <b>3 ошибки при покупке рожковой кофемашины</b>\n\n1. Экономия на жерновах кофемолки.\n2. Отсутствие PID-контроллера температуры.\n3. Игнорирование жесткости воды.",
+      "critic_score": 0.92
+    }
+  }
+}
+```
+
+---
+
+### 9.2. Онбординг проектов и База знаний RAG
+
+#### `POST /api/v1/projects/analyze` (Алиас: `/api/v1/parser/analyze`)
+* **Назначение:** Автоматический экспресс-анализ сайта, ссылок или текстового описания для первичного сбора профиля компании (5 экранов онбординга).
+* **cURL:**
+```bash
+curl -X POST "http://localhost:8000/api/v1/projects/analyze" \
+  -H "Content-Type: application/json" \
+  -H "X-Internal-Secret: ucust-super-secret-service-token-2026" \
+  -d '{
+    "raw_input": "Сеть премиальных барбершопов Chop-Chop в Москве. Классические стрижки, моделирование бороды, мужская косметика.",
+    "links": ["https://chopchop.me"]
+  }'
+```
+* **Пример ответа (`200 OK`):**
+```json
+{
+  "status": "success",
+  "project_profile_draft": {
+    "about": {
+      "name": "Chop-Chop",
+      "niche": "Мужской барбершоп",
+      "city": "Москва"
+    },
+    "audience": {
+      "target": "Мужчины 20-45 лет, ценящие классический стиль и качественный сервис"
+    },
+    "offerings": {
+      "main_products": ["Мужская стрижка", "Стрижка бороды", "Уходовые средства"]
+    },
+    "voice": {
+      "tone": "Сдержанный, уверенный, лаконичный"
+    }
+  }
+}
+```
+
+#### `POST /api/v1/projects/{project_id}/commit` (Алиасы: `/api/v1/projects/commit`, `/api/v1/projects/{project_id}/knowledge`)
+* **Назначение:** Фиксация утвержденного человеком профиля и векторизация фактов в базу знаний pgvector под уникальным `project_id`.
+* **cURL:**
+```bash
+curl -X POST "http://localhost:8000/api/v1/projects/chopchop_moscow/commit" \
+  -H "Content-Type: application/json" \
+  -H "X-Internal-Secret: ucust-super-secret-service-token-2026" \
+  -d '{
+    "data": {
+      "about": { "name": "Chop-Chop", "niche": "Барбершоп", "city": "Москва" },
+      "audience": { "target": "Мужчины 20-45 лет" },
+      "offerings": { "main_products": ["Стрижка", "Борода"] },
+      "voice": { "tone": "Лаконичный" }
+    }
+  }'
+```
+* **Пример ответа (`200 OK`):**
+```json
+{
+  "status": "success",
+  "project_id": "chopchop_moscow",
+  "chunks_indexed": 5,
+  "message": "База знаний проекта успешно сформирована и векторизована в pgvector"
+}
+```
+
+#### `POST /api/v1/ai/rag/ingest`
+* **Назначение:** Добавление произвольных текстовых документов или регламентов в базу знаний проекта.
+* **cURL:**
+```bash
+curl -X POST "http://localhost:8000/api/v1/ai/rag/ingest" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "project_id": "chopchop_moscow",
+    "document_title": "Прайс-лист и акции осени 2026",
+    "content": "С 1 октября комплекс 'Стрижка + Борода' стоит 3500 руб. Студентам скидка 20% по будням до 15:00."
+  }'
+```
+* **Пример ответа (`200 OK`):**
+```json
+{
+  "status": "success",
+  "project_id": "chopchop_moscow",
+  "indexed_chunks": 2
+}
+```
+
+#### `POST /api/v1/ai/rag/query`
+* **Назначение:** Семантический поиск фактов по базе знаний компании с ранжированием релевантности.
+* **cURL:**
+```bash
+curl -X POST "http://localhost:8000/api/v1/ai/rag/query" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "project_id": "chopchop_moscow",
+    "query": "Какие скидки для студентов?"
+  }'
+```
+* **Пример ответа (`200 OK`):**
+```json
+{
+  "status": "success",
+  "results": [
+    {
+      "text": "Студентам скидка 20% по будням до 15:00 на все услуги при предъявлении билета.",
+      "score": 0.94,
+      "source": "Прайс-лист и акции осени 2026"
+    }
+  ]
+}
+```
+
+---
+
+### 9.3. Умный Банк Идей и Динамические Плейсхолдеры
+
+#### `GET /api/v1/ideas/placeholders`
+* **Назначение:** Получение актуальных подсказок для поля ввода темы с автоматической подстановкой по кнопке `Tab`.
+* **cURL:**
+```bash
+curl -X GET "http://localhost:8000/api/v1/ideas/placeholders?niche=IT&company_name=DevStudio&limit=2"
+```
+* **Пример ответа (`200 OK`):**
+```json
+{
+  "status": "success",
+  "niche": "IT",
+  "company_name": "DevStudio",
+  "placeholders": [
+    {
+      "placeholder_text": "💡 Идея (через 3 дн.): День программиста — как команда DevStudio автоматизирует рутину?",
+      "suggested_topic": "День программиста: 3 внутренних скрипта DevStudio, которые экономят нам 15 часов в неделю",
+      "source_type": "calendar",
+      "funnel_stage": "TOFU",
+      "hint": "Нажмите Tab, чтобы вставить тему праздника"
+    }
+  ]
+}
+```
+
+#### `GET /api/v1/ideas/bank`
+* **Назначение:** Получение структурированного каталога инфоповодов и ситуативных тем на 21 день вперед.
+* **cURL:**
+```bash
+curl -X GET "http://localhost:8000/api/v1/ideas/bank?niche=Ресторан&country=россия&days_ahead=14&company_name=Trattoria"
+```
+* **Пример ответа (`200 OK`):**
+```json
+{
+  "status": "success",
+  "niche": "Ресторан",
+  "country": "россия",
+  "ideas_count": 4,
+  "ideas": [
+    {
+      "id": "idea_0_1",
+      "title": "Всемирный день пасты",
+      "description": "Итальянская кухня и традиции приготовления свежей пасты",
+      "date_str": "2026-10-25",
+      "days_until": 1,
+      "category": "holiday",
+      "suggested_funnel": "TOFU_UNAWARE",
+      "suggested_framework": "PAS",
+      "niche_relevance": 0.95,
+      "sample_hook": "Завтра Всемирный день пасты! Шеф Trattoria раскрывает секрет идеальной карбонары без сливок."
+    }
+  ]
+}
+```
+
+#### `POST /api/v1/ideas/evaluate-placement`
+* **Назначение:** Проверка безопасности размещения темы в календаре (защита продающих BOFU-слотов от затирания мемами).
+* **cURL:**
+```bash
+curl -X POST "http://localhost:8000/api/v1/ideas/evaluate-placement" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "topic": "Подборка забавных мемов про офис",
+    "niche": "SaaS",
+    "company_name": "TaskFlow",
+    "target_slot_type": "BOFU_DIRECT_OFFER",
+    "is_override_scheduled_slot": true
+  }'
+```
+* **Пример ответа (`200 OK`):**
+```json
+{
+  "status": "success",
+  "verdict": {
+    "is_funnel_safe": false,
+    "placement_status": "warning",
+    "detected_funnel_stage": "TOFU_UNAWARE",
+    "recommended_target": "draft",
+    "marketing_framework": "PAS",
+    "cta_guidance": "Мягкое вовлечение (Без прямого CTA)",
+    "explanation": "⚠️ Внимание: Выбранный слот в календаре предназначен для конверсии и продаж (BOFU_DIRECT_OFFER), а тема является развлекательной (TOFU). Прямая замена разрушит логику прогрева. Рекомендуем сохранить тему в черновики.",
+    "alternative_slots": ["draft", "unscheduled_story", "weekend_lifestyle_slot"]
+  }
+}
+```
+
+---
+
+### 9.4. Стратегия контента и Ленивый GPU-Рендер
+
+#### `POST /api/v1/content/draft`
+* **Назначение:** Быстрая генерация одного черновика поста по стратегии бренда (0 GPU).
+* **cURL:**
+```bash
+curl -X POST "http://localhost:8000/api/v1/content/draft" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "brand_id": "brand_101",
+    "company_name": "Glow Cosmetics",
+    "industry": "b2c_lifestyle",
+    "tier": "pro",
+    "topic": "Уход за кожей осенью"
+  }'
+```
+* **Пример ответа (`200 OK`):**
+```json
+{
+  "status": "success",
+  "post_draft": {
+    "post_id": "post_df8192a",
+    "status": "draft_text",
+    "text_content": "🍂 <b>Осенний уход: 3 правила сохранения увлажненности</b>\n\nС включением отопления кожа теряет до 25% влаги...",
+    "critic_score": 0.94
+  }
+}
+```
+
+#### `POST /api/v1/content/week-plan`
+* **Назначение:** Мгновенная генерация сетки контент-плана на 7–30 дней с балансом воронки (TOFU/MOFU/BOFU) с 0 GPU overhead.
+* **cURL:**
+```bash
+curl -X POST "http://localhost:8000/api/v1/content/week-plan" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "brand_id": "brand_101",
+    "company_name": "Glow Cosmetics",
+    "industry": "b2c_lifestyle",
+    "tier": "pro",
+    "days_count": 7
+  }'
+```
+* **Пример ответа (`200 OK`):**
+```json
+{
+  "status": "success",
+  "brand_id": "brand_101",
+  "total_posts": 7,
+  "posts": [
+    { "post_id": "post_w1_01", "status": "draft_text", "critic_score": 0.95 },
+    { "post_id": "post_w1_02", "status": "draft_text", "critic_score": 0.93 }
+  ]
+}
+```
+
+#### `POST /api/v1/content/render/{post_id}`
+* **Назначение:** Триггер асинхронного рендера фото на GPU через ComfyUI (Qwen-Image 2512).
+* **cURL:**
+```bash
+curl -X POST "http://localhost:8000/api/v1/content/render/post_df8192a"
+```
+* **Пример ответа (`200 OK`):**
+```json
+{
+  "status": "success",
+  "post_id": "post_df8192a",
+  "lifecycle_status": "rendering",
+  "vram_cost_mb": 4200,
+  "message": "Задача рендера успешно поставлена в очередь GPU"
+}
+```
+
+#### `GET /api/v1/content/post/{post_id}`
+* **Назначение:** Проверка готовности поста и получение CDN-ссылок на сгенерированные фото.
+* **cURL:**
+```bash
+curl -X GET "http://localhost:8000/api/v1/content/post/post_df8192a"
+```
+* **Пример ответа (`200 OK`):**
+```json
+{
+  "post_id": "post_df8192a",
+  "status": "rendered",
+  "rendered_image_urls": [
+    "https://cdn.ucust.com/renders/2026/09/post_df8192a_main.webp"
+  ]
+}
+```
+
+#### `POST /api/v1/ai/strategy/generate`
+* **Назначение:** Комплексная генерация долгосрочной стратегии контента и персон целевой аудитории.
+* **cURL:**
+```bash
+curl -X POST "http://localhost:8000/api/v1/ai/strategy/generate" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "company_name": "EcoPack",
+    "niche": "Экологичная упаковка для e-commerce",
+    "goals": ["B2B лидогенерация", "Повышение узнаваемости"]
+  }'
+```
+* **Пример ответа (`200 OK`):**
+```json
+{
+  "status": "success",
+  "strategist": "ContentStrategyEngine",
+  "data": {
+    "pillars": ["Кейсы экономии", "Эко-стандарты", "Отзывы клиентов"],
+    "target_funnel_split": { "tofu": 0.4, "mofu": 0.4, "bofu": 0.2 }
+  }
+}
+```
+
+---
+
+### 9.5. Контроль качества и Pre-Mortem аудит
+
+#### `POST /api/v1/ai/critic/review`
+* **Назначение:** Независимый аудит текста критика Чарли Мангера 2.0 (поиск клише, утечек лексики и эхо брифа).
+* **cURL:**
+```bash
+curl -X POST "http://localhost:8000/api/v1/ai/critic/review" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "Мы динамично развивающаяся студия. Сделаем лучший сайт по доступным ценам.",
+    "topic": "Разработка сайтов",
+    "niche": "Веб-студия",
+    "strictness": 0.85
+  }'
+```
+* **Пример ответа (`200 OK`):**
+```json
+{
+  "status": "success",
+  "critic": "Charlie Munger Pre-Mortem Agent",
+  "data": {
+    "passed": false,
+    "score": 0.45,
+    "verdict": "REJECT",
+    "criticism": "Обнаружены штампы: 'динамично развивающаяся', 'по доступным ценам'.",
+    "fatal_flaws": ["Присутствуют запрещенные клише", "Отсутствует CTA"],
+    "actionable_feedback": "Укажите конкретные технологии, сроки разработки и добавьте призыв рассчитать смету проекта."
+  }
+}
+```
+
+---
+
+### 9.6. Мультимодальный анализ и Генерация изображений
+
+#### `POST /api/v1/ai/vision/analyze` (Алиас: `/api/v1/vision/quick-analyze`)
+* **Назначение:** Визуальный анализ фото через VLM Moondream2 (определение объектов, текстур, цветов и композиции).
+* **cURL:**
+```bash
+curl -X POST "http://localhost:8000/api/v1/ai/vision/analyze" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "image": "https://example.com/sample_product.jpg",
+    "topic": "Новый десерт",
+    "company_name": "SweetBakery"
+  }'
+```
+* **Пример ответа (`200 OK`):**
+```json
+{
+  "status": "success",
+  "vision_analyst": "Moondream2",
+  "data": {
+    "description": "Слоеный круассан с миндальными лепестками на мраморной тарелке рядом с чашкой капучино.",
+    "dominant_colors": ["#E8C39E", "#4A2E18", "#F5F5F0"],
+    "suggested_props": "Artisan bakery setting, morning ambient light"
+  }
+}
+```
+
+#### `POST /api/v1/ai/generate-image`
+* **Назначение:** Прямая генерация SMM-изображения по промпту через ComfyUI/Qwen.
+* **cURL:**
+```bash
+curl -X POST "http://localhost:8000/api/v1/ai/generate-image" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "Commercial photo of artisan sourdough bread on wooden board, rustic knife, flour dust, 85mm lens.",
+    "aspect_ratio": "1:1",
+    "steps": 30
+  }'
+```
+* **Пример ответа (`200 OK`):**
+```json
+{
+  "status": "success",
+  "image_url": "https://cdn.ucust.com/renders/img_819203.webp",
+  "width": 1024,
+  "height": 1024,
+  "generation_time_sec": 6.8
+}
+```
+
+---
+
+### 9.7. Сборщики данных, Парсеры и Анализ сайтов/соцсетей
+
+#### `POST /api/v1/ai/website/analyze` (Алиас: `/api/v1/collectors/website`)
+* **Назначение:** Парсинг веб-сайта компании (извлечение УТП, структуры меню, контактных данных и соцсетей).
+* **cURL:**
+```bash
+curl -X POST "http://localhost:8000/api/v1/ai/website/analyze" \
+  -H "Content-Type: application/json" \
+  -d '{ "url": "https://dodo.ru" }'
+```
+* **Пример ответа (`200 OK`):**
+```json
+{
+  "status": "success",
+  "analyst": "WebsiteCollector",
+  "data": {
+    "title": "Додо Пицца — сеть пиццерий №1",
+    "uvp": "Горячая пицца за 30 минут или промокод на большую пиццу",
+    "products_sample": ["Пепперони", "Четыре сыра", "Додстер"],
+    "contacts": { "phone": "8-800-333-00-60", "city": "Сыктывкар / Москва" }
+  }
+}
+```
+
+#### `POST /api/v1/ai/telegram/analyze` (Алиас: `/api/v1/collectors/telegram`)
+* **Назначение:** Анализ Telegram-канала бренда (стиль постов, частота, вовлеченность и топовые темы).
+* **cURL:**
+```bash
+curl -X POST "http://localhost:8000/api/v1/ai/telegram/analyze" \
+  -H "Content-Type: application/json" \
+  -d '{ "channel_username": "@surfcoffee" }'
+```
+* **Пример ответа (`200 OK`):**
+```json
+{
+  "status": "success",
+  "analyst": "TelegramCollector",
+  "data": {
+    "posts_analyzed": 20,
+    "average_length": 340,
+    "top_hashtags": ["#surfcoffee", "#specialty", "#goodvibes"],
+    "tone_detected": "Серферский, легкий, дружеский"
+  }
+}
+```
+
+#### `POST /api/v1/ai/vk/analyze` (Алиас: `/api/v1/collectors/vk`)
+* **Назначение:** Анализ сообщества ВКонтакте (товары, статьи, обсуждения и отзывы).
+* **cURL:**
+```bash
+curl -X POST "http://localhost:8000/api/v1/ai/vk/analyze" \
+  -H "Content-Type: application/json" \
+  -d '{ "group_id": "surfcoffee" }'
+```
+* **Пример ответа (`200 OK`):**
+```json
+{
+  "status": "success",
+  "data": { "members_count": 45000, "posts_per_week": 5 }
+}
+```
+
+#### `POST /api/v1/ai/geo/analyze` (Алиас: `/api/v1/collectors/geo`)
+* **Назначение:** Парсинг гео-карточек компании (Яндекс Карты, 2ГИС, Google Maps) для извлечения адреса, графика и отзывов.
+* **cURL:**
+```bash
+curl -X POST "http://localhost:8000/api/v1/ai/geo/analyze" \
+  -H "Content-Type: application/json" \
+  -d '{ "geo_url": "https://yandex.ru/maps/org/surf_coffee/12345" }'
+```
+* **Пример ответа (`200 OK`):**
+```json
+{
+  "status": "success",
+  "data": {
+    "rating": 4.9,
+    "reviews_count": 520,
+    "address": "ул. Большая Дмитровка, 12, Москва",
+    "working_hours": "08:00 - 23:00"
+  }
+}
+```
+
+#### `POST /api/v1/ai/documents/analyze` (Алиасы: `/api/v1/collectors/documents`, `/api/v1/collectors/analyze-documents`)
+* **Назначение:** Анализ PDF/DOCX презентаций, маркетинг-китов и регламентов.
+* **cURL:**
+```bash
+curl -X POST "http://localhost:8000/api/v1/ai/documents/analyze" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "document_urls": ["https://example.com/brandbook.pdf"],
+    "user_id": "user_1"
+  }'
+```
+* **Пример ответа (`200 OK`):**
+```json
+{
+  "status": "success",
+  "data": {
+    "summary": "Брендбук компании: основные цвета #FF5500, шрифт Inter, Tone of Voice — Экспертный и открытый."
+  }
+}
+```
+
+#### `POST /api/v1/ai/competitor/analyze`
+* **Назначение:** Декомпозиция конкурента (Strengths, Weaknesses, Pricing, UVP) и выработка контр-стратегии отстройки.
+* **cURL:**
+```bash
+curl -X POST "http://localhost:8000/api/v1/ai/competitor/analyze" \
+  -H "Content-Type: application/json" \
+  -d '{ "url": "https://competitor.com", "niche": "Фитнес-клуб" }'
+```
+* **Пример ответа (`200 OK`):**
+```json
+{
+  "status": "success",
+  "data": {
+    "competitor_uvp": "Низкая цена абонемента",
+    "weakness": "Переполненные залы в вечерние часы",
+    "counter_strategy": "Делать упор на камерность, персональный тренинг и свободные тренажеры без очередей."
+  }
+}
+```
+
+#### `POST /api/v1/collectors/analyze-brand`
+* **Назначение:** Сквозной мультимодальный сбор бренда (сайт + соцсети + карты) в один клик.
+* **cURL:**
+```bash
+curl -X POST "http://localhost:8000/api/v1/collectors/analyze-brand" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "brand_name": "SkyFitness",
+    "website_url": "https://skyfitness.ru",
+    "telegram_url": "https://t.me/skyfitness",
+    "user_id": "user_10"
+  }'
+```
+* **Пример ответа (`200 OK`):**
+```json
+{
+  "status": "success",
+  "data": { "brand_dossier_ready": true, "total_facts_extracted": 18 }
+}
+```
+
+#### `POST /api/v1/ai/collectors/parse` (Алиасы: `/api/v1/collectors/parse`, `/api/v1/ai/parse`)
+* **Назначение:** Универсальный сборщик сырых данных по URL любого типа.
+* **cURL:**
+```bash
+curl -X POST "http://localhost:8000/api/v1/collectors/parse" \
+  -H "Content-Type: application/json" \
+  -d '{ "target_url": "https://example.com/article" }'
+```
+* **Пример ответа (`200 OK`):**
+```json
+{
+  "status": "success",
+  "content": "Текст статьи...",
+  "status_code": 200
+}
+```
+
+---
+
+### 9.8. Тренды и Рыночная аналитика
+
+#### `GET /api/v1/ai/trends`
+* **Назначение:** Получение актуальных поисковых и вирусных трендов по нише.
+* **cURL:**
+```bash
+curl -X GET "http://localhost:8000/api/v1/ai/trends?niche=Ресторанный%20бизнес"
+```
+* **Пример ответа (`200 OK`):**
+```json
+{
+  "status": "success",
+  "niche": "Ресторанный бизнес",
+  "trending_topics": [
+    "Сезонные напитки с тыквой и специями",
+    "Zero-waste гастрономия",
+    "Безалкогольные пейринги"
+  ]
+}
+```
+
+#### `GET /api/v1/ai/analytics/graphs`
+* **Назначение:** Графики динамики спроса и сезонности для аналитических дашбордов.
+* **cURL:**
+```bash
+curl -X GET "http://localhost:8000/api/v1/ai/analytics/graphs?niche=Фитнес"
+```
+* **Пример ответа (`200 OK`):**
+```json
+{
+  "status": "success",
+  "labels": ["Авг", "Сен", "Окт", "Ноя"],
+  "values": [45, 80, 92, 70],
+  "peak_month": "Октябрь"
+}
+```
+
+---
+
+### 9.9. Асинхронные очереди задач
+
+#### `POST /api/v1/ai/tasks/async-generate`
+* **Назначение:** Постановка тяжелой задачи генерации контента в фоновую очередь Celery/Redis.
+* **cURL:**
+```bash
+curl -X POST "http://localhost:8000/api/v1/ai/tasks/async-generate" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "task_type": "full_week_render",
+    "payload": { "brand_id": "brand_101", "days": 7 },
+    "callback_url": "https://backend.ucust.com/webhooks/ai"
+  }'
+```
+* **Пример ответа (`200 OK`):**
+```json
+{
+  "status": "queued",
+  "task_id": "celery_task_901823ab",
+  "estimated_time_sec": 25
+}
+```
+
+#### `GET /api/v1/ai/tasks/{task_id}/status`
+* **Назначение:** Опрос статуса выполнения фоновой задачи.
+* **cURL:**
+```bash
+curl -X GET "http://localhost:8000/api/v1/ai/tasks/celery_task_901823ab/status"
+```
+* **Пример ответа (`200 OK`):**
+```json
+{
+  "task_id": "celery_task_901823ab",
+  "status": "completed",
+  "progress_percent": 100,
+  "result": { "posts_generated": 7, "images_rendered": 7 }
+}
+```
+
+#### `GET /api/v1/ai/queue/stats`
+* **Назначение:** Мониторинг очередей воркеров `ucust_ai_queue` и `ucust_gpu_render`.
+* **cURL:**
+```bash
+curl -X GET "http://localhost:8000/api/v1/ai/queue/stats"
+```
+* **Пример ответа (`200 OK`):**
+```json
+{
+  "status": "healthy",
+  "active_workers": 2,
+  "pending_tasks": 0,
+  "completed_today": 142
+}
+```
+
+---
+
+### 9.10. Системная диагностика, VRAM и Метрики
+
+#### `GET /health` (Алиасы: `/api/v1/ai/health`, `GET /`)
+* **Назначение:** Проверка живучести и статуса готовности всех 4 сервисов контура.
+* **cURL:**
+```bash
+curl -X GET "http://localhost:8000/health"
+```
+* **Пример ответа (`200 OK`):**
+```json
+{
+  "status": "healthy",
+  "version": "2.7.0",
+  "services": {
+    "gateway": "online",
+    "comfyui": "connected",
+    "octopoda": "ready",
+    "celery": "active"
+  }
+}
+```
+
+#### `GET /gpu-status` (Алиас: `/api/v1/ai/system/gpu-status`)
+* **Назначение:** Диагностика реальной видеопамяти NVIDIA GPU и планировщика VRAM.
+* **cURL:**
+```bash
+curl -X GET "http://localhost:8000/gpu-status"
+```
+* **Пример ответа (`200 OK`):**
+```json
+{
+  "status": "success",
+  "device_name": "NVIDIA GeForce RTX 4090",
+  "vram_total_gb": 24.0,
+  "vram_used_gb": 5.4,
+  "vram_free_gb": 18.6,
+  "active_render_workers": 0,
+  "max_parallel_renders": 3
+}
+```
+
+#### `GET /metrics`
+* **Назначение:** Prometheus-совместимые метрики производительности и RPS.
+* **cURL:**
+```bash
+curl -X GET "http://localhost:8000/metrics"
+```
+* **Пример ответа (`200 OK`):**
+```
+# HELP ucust_http_requests_total Total HTTP requests
+# TYPE ucust_http_requests_total counter
+ucust_http_requests_total{endpoint="/orchestration/generate",status="200"} 1240
+```
+
+---
+
+### 9.11. Публикация достижений
+
+#### `POST /api/v1/ai/achievements/post`
+* **Назначение:** Публикация релиза или достижения в официальный Telegram-канал.
+* **cURL:**
+```bash
+curl -X POST "http://localhost:8000/api/v1/ai/achievements/post" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "channel": "@UcustAi",
+    "title": "🚀 Релиз UCust AI v2.7.0",
+    "description": "Запущен полный контур с ComfyUI, Octopoda и Smart Idea Bank.",
+    "metrics": { "RPS": "171 ops/sec", "Endpoints": 56 }
+  }'
+```
+* **Пример ответа (`200 OK`):**
+```json
+{
+  "status": "success",
+  "broadcaster": "Telethon AchievementBroadcaster",
+  "data": { "message_id": 9812, "channel": "@UcustAi", "status": "sent" }
+}
+```
