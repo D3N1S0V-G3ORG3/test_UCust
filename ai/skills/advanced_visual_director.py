@@ -140,12 +140,14 @@ class AdvancedVisualDirector:
 
         from skills.photo_generator import QwenPromptAssembler
         negative_prompt = QwenPromptAssembler.get_negative_prompt(scene_type)
+        if "plastic skin" not in negative_prompt:
+            negative_prompt += ", plastic skin, staged studio photoshoot"
 
         positive_prompt = (
             f"A candid commercial photograph representing {niche}. "
             f"The subject is {topic.strip()} {colors_str}. "
             f"Captured in a realistic natural environment with soft ambient daylight, subtle micro-shadows, and authentic room contrast. "
-            f"Shot on a 24mm smartphone camera with natural depth of field, genuine real-life textures, unedited raw snapshot aesthetic, zero CGI."
+            f"Shot on iPhone 16 Pro, 24mm smartphone camera with natural depth of field, genuine real-life textures, unedited raw snapshot aesthetic, zero CGI."
         )
 
         return {

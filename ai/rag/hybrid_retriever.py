@@ -14,6 +14,7 @@ if hasattr(sys.stdout, 'reconfigure'):
 import os
 import math
 import re
+import threading
 from typing import List, Dict, Any, Optional, Tuple
 from collections import Counter
 from rag.models import Chunk, RetrievalResult
@@ -28,6 +29,7 @@ class LocalDenseStore:
         self.chunks: List[Chunk] = []
         self.embeddings: List[List[float]] = []
         self.model = None
+        self._lock = threading.RLock()
         
         if os.getenv("ENABLE_NEURAL_MODELS", "0") == "1":
             try:
@@ -63,45 +65,48 @@ class LocalDenseStore:
         return vec
 
     def add_chunks(self, chunks: List[Chunk]):
-        for chunk in chunks:
-            self.chunks.append(chunk)
-            emb = self._encode_text(chunk.text)
-            self.embeddings.append(emb)
+        with self._lock:
+            for chunk in chunks:
+                self.chunks.append(chunk)
+                emb = self._encode_text(chunk.text)
+                self.embeddings.append(emb)
 
     def delete_by_tenant(self, tenant_id: str) -> int:
         """Удаление всех чанков тенанта из векторного хранилища."""
-        tid = tenant_id.strip().lower()
-        new_chunks = []
-        new_embeddings = []
-        deleted = 0
-        for chunk, emb in zip(self.chunks, self.embeddings):
-            c_tenant = (chunk.metadata.get("tenant_id") or chunk.metadata.get("company_name", "")).strip().lower().replace(" ", "_")
-            if c_tenant == tid:
-                deleted += 1
-            else:
-                new_chunks.append(chunk)
-                new_embeddings.append(emb)
-        self.chunks = new_chunks
-        self.embeddings = new_embeddings
-        return deleted
+        with self._lock:
+            tid = tenant_id.strip().lower()
+            new_chunks = []
+            new_embeddings = []
+            deleted = 0
+            for chunk, emb in zip(self.chunks, self.embeddings):
+                c_tenant = (chunk.metadata.get("tenant_id") or chunk.metadata.get("company_name", "")).strip().lower().replace(" ", "_")
+                if c_tenant == tid:
+                    deleted += 1
+                else:
+                    new_chunks.append(chunk)
+                    new_embeddings.append(emb)
+            self.chunks = new_chunks
+            self.embeddings = new_embeddings
+            return deleted
 
     def search(self, query: str, top_k: int = 10, tenant_id: Optional[str] = None) -> List[Tuple[Chunk, float]]:
-        if not self.chunks:
-            return []
+        with self._lock:
+            if not self.chunks:
+                return []
+                
+            q_emb = self._encode_text(query)
+            scored: List[Tuple[Chunk, float]] = []
             
-        q_emb = self._encode_text(query)
-        scored: List[Tuple[Chunk, float]] = []
-        
-        for chunk, emb in zip(self.chunks, self.embeddings):
-            if tenant_id:
-                c_tenant = chunk.metadata.get("tenant_id") or chunk.metadata.get("company_name", "").lower().replace(" ", "_")
-                if c_tenant and c_tenant.strip().lower() != tenant_id.strip().lower():
-                    continue
-            sim = sum(q * e for q, e in zip(q_emb, emb))
-            scored.append((chunk, float(sim)))
-            
-        scored.sort(key=lambda x: x[1], reverse=True)
-        return scored[:top_k]
+            for chunk, emb in zip(self.chunks, self.embeddings):
+                if tenant_id:
+                    c_tenant = chunk.metadata.get("tenant_id") or chunk.metadata.get("company_name", "").lower().replace(" ", "_")
+                    if c_tenant and c_tenant.strip().lower() != tenant_id.strip().lower():
+                        continue
+                sim = sum(q * e for q, e in zip(q_emb, emb))
+                scored.append((chunk, float(sim)))
+                
+            scored.sort(key=lambda x: x[1], reverse=True)
+            return scored[:top_k]
 
 
 class BM25SparseRetriever:
@@ -118,83 +123,98 @@ class BM25SparseRetriever:
         self.doc_freqs: Dict[str, int] = Counter()
         self.corpus_size: int = 0
         self.doc_term_counts: List[Dict[str, int]] = []
+        self._lock = threading.RLock()
 
     def _tokenize(self, text: str) -> List[str]:
         return [t for t in re.findall(r'[a-zA-Zа-яА-Я0-9_@]+', text.lower()) if len(t) > 1]
 
     def add_chunks(self, chunks: List[Chunk]):
-        for chunk in chunks:
-            self.chunks.append(chunk)
-            tokens = self._tokenize(chunk.text)
-            term_count = Counter(tokens)
-            self.doc_term_counts.append(term_count)
-            self.doc_lengths.append(len(tokens))
-            
-            for term in term_count.keys():
-                self.doc_freqs[term] += 1
+        with self._lock:
+            for chunk in chunks:
+                self.chunks.append(chunk)
+                tokens = self._tokenize(chunk.text)
+                term_count = Counter(tokens)
+                self.doc_term_counts.append(term_count)
+                self.doc_lengths.append(len(tokens))
                 
-        self.corpus_size = len(self.chunks)
-        self.avg_doc_length = sum(self.doc_lengths) / self.corpus_size if self.corpus_size > 0 else 0.0
+                for term in term_count.keys():
+                    self.doc_freqs[term] += 1
+                    
+            self.corpus_size = len(self.chunks)
+            self.avg_doc_length = sum(self.doc_lengths) / self.corpus_size if self.corpus_size > 0 else 0.0
 
     def delete_by_tenant(self, tenant_id: str) -> int:
         """Удаление всех чанков тенанта из разреженного индекса BM25."""
-        tid = tenant_id.strip().lower()
-        new_chunks = []
-        deleted = 0
-        for chunk in self.chunks:
-            c_tenant = (chunk.metadata.get("tenant_id") or chunk.metadata.get("company_name", "")).strip().lower().replace(" ", "_")
-            if c_tenant == tid:
-                deleted += 1
-            else:
-                new_chunks.append(chunk)
-        
-        # Пересчет индекса BM25
-        self.chunks = []
-        self.doc_lengths = []
-        self.avg_doc_length = 0.0
-        self.doc_freqs = Counter()
-        self.corpus_size = 0
-        self.doc_term_counts = []
-        if new_chunks:
-            self.add_chunks(new_chunks)
-        return deleted
+        with self._lock:
+            tid = tenant_id.strip().lower()
+            new_chunks = []
+            deleted = 0
+            for chunk in self.chunks:
+                c_tenant = (chunk.metadata.get("tenant_id") or chunk.metadata.get("company_name", "")).strip().lower().replace(" ", "_")
+                if c_tenant == tid:
+                    deleted += 1
+                else:
+                    new_chunks.append(chunk)
+            
+            # Пересчет индекса BM25
+            self.chunks = []
+            self.doc_lengths = []
+            self.avg_doc_length = 0.0
+            self.doc_freqs = Counter()
+            self.corpus_size = 0
+            self.doc_term_counts = []
+            if new_chunks:
+                for chunk in new_chunks:
+                    self.chunks.append(chunk)
+                    tokens = self._tokenize(chunk.text)
+                    term_count = Counter(tokens)
+                    self.doc_term_counts.append(term_count)
+                    self.doc_lengths.append(len(tokens))
+                    for term in term_count.keys():
+                        self.doc_freqs[term] += 1
+                self.corpus_size = len(self.chunks)
+                self.avg_doc_length = sum(self.doc_lengths) / self.corpus_size if self.corpus_size > 0 else 0.0
+            return deleted
 
     def search(self, query: str, top_k: int = 10, tenant_id: Optional[str] = None) -> List[Tuple[Chunk, float]]:
-        if not self.chunks:
-            return []
-            
-        q_tokens = self._tokenize(query)
-        if not q_tokens:
-            return []
-            
-        scores: List[float] = [0.0] * self.corpus_size
-        
-        for token in q_tokens:
-            df = self.doc_freqs.get(token, 0)
-            if df == 0:
-                continue
+        with self._lock:
+            if not self.chunks:
+                return []
                 
-            idf = math.log(1.0 + (self.corpus_size - df + 0.5) / (df + 0.5))
+            q_tokens = self._tokenize(query)
+            if not q_tokens:
+                return []
+                
+            scores: List[float] = [0.0] * self.corpus_size
             
-            for i, term_counts in enumerate(self.doc_term_counts):
-                chunk = self.chunks[i]
-                if tenant_id:
-                    c_tenant = chunk.metadata.get("tenant_id") or chunk.metadata.get("company_name", "").lower().replace(" ", "_")
-                    if c_tenant and c_tenant.strip().lower() != tenant_id.strip().lower():
-                        continue
-                        
-                tf = term_counts.get(token, 0)
-                if tf == 0:
+            for token in q_tokens:
+                df = self.doc_freqs.get(token, 0)
+                if df == 0:
                     continue
-                doc_len = self.doc_lengths[i]
-                numerator = tf * (self.k1 + 1.0)
-                denominator = tf + self.k1 * (1.0 - self.b + self.b * (doc_len / (self.avg_doc_length or 1.0)))
-                scores[i] += idf * (numerator / denominator)
+                    
+                idf = math.log(1.0 + (self.corpus_size - df + 0.5) / (df + 0.5))
                 
-        max_score = max(scores) if scores and max(scores) > 0 else 1.0
-        results = [(self.chunks[i], scores[i] / max_score) for i in range(self.corpus_size) if scores[i] > 0]
-        results.sort(key=lambda x: x[1], reverse=True)
-        return results[:top_k]
+                for i, term_counts in enumerate(self.doc_term_counts):
+                    if i >= len(self.chunks):
+                        continue
+                    chunk = self.chunks[i]
+                    if tenant_id:
+                        c_tenant = chunk.metadata.get("tenant_id") or chunk.metadata.get("company_name", "").lower().replace(" ", "_")
+                        if c_tenant and c_tenant.strip().lower() != tenant_id.strip().lower():
+                            continue
+                            
+                    tf = term_counts.get(token, 0)
+                    if tf == 0:
+                        continue
+                    doc_len = self.doc_lengths[i]
+                    numerator = tf * (self.k1 + 1.0)
+                    denominator = tf + self.k1 * (1.0 - self.b + self.b * (doc_len / (self.avg_doc_length or 1.0)))
+                    scores[i] += idf * (numerator / denominator)
+                    
+            max_score = max(scores) if scores and max(scores) > 0 else 1.0
+            results = [(self.chunks[i], scores[i] / max_score) for i in range(self.corpus_size) if scores[i] > 0]
+            results.sort(key=lambda x: x[1], reverse=True)
+            return results[:top_k]
 
 
 class HybridRetriever:

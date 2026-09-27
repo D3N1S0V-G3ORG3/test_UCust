@@ -403,7 +403,7 @@ class QwenPromptAssembler:
         base_negative = [
             "blurry", "low quality", "pixelated", "distorted",
             "watermark", "text overlay", "signature",
-            "oversaturated", "artificial", "plastic-looking", "3D render", "CGI", "cartoon", "anime"
+            "oversaturated", "artificial", "plastic-looking", "3D render", "CGI", "cgi", "cartoon", "anime"
         ]
         if scene_type in {"portrait", "human", "beauty", "lifestyle"}:
             base_negative.extend([

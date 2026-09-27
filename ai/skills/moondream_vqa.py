@@ -212,6 +212,9 @@ class MoondreamVQASkill:
 
     def load_model(self) -> bool:
         """Загружает модель Moondream GGUF в память через Singleton Pool."""
+        if os.getenv("ENABLE_NEURAL_MODELS", "0") != "1":
+            logger.info("[Moondream] ENABLE_NEURAL_MODELS != 1. Используется встроенный CV-анализатор.")
+            return False
         if MoondreamVQASkill._shared_is_loaded and MoondreamVQASkill._shared_llm is not None:
             self._llm = MoondreamVQASkill._shared_llm
             self._is_loaded = True
