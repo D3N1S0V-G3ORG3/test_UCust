@@ -353,3 +353,230 @@ python start_mock.py
 - Mock-сервер поднимается на порту `8000` (`http://localhost:8000`).
 - Полностью реализует все **54 контрактных эндпоинта** (включая `/api/v1/ideas/placeholders`, `/api/v1/ideas/bank`, `/api/v1/ideas/evaluate-placement`, `/api/v1/projects/analyze`, `/api/v1/projects/{project_id}/knowledge`, `/api/v1/task/execute`, `/metrics`).
 - Возвращает мгновенные валидные ответы, имитирует задержки очередей и отправляет тестовые Webhook-коллбэки на указанный `callback_url`.
+
+---
+
+## 8. Пошаговый сквозной гайд: от Запроса Бэкенда до Готового Поста (Для начинающих)
+
+Если вы впервые интегрируете AI-микросервис в основной бэкенд (Django, NestJS, Go, Laravel, FastAPI), этот раздел объясняет весь цикл работы простым языком шаг за шагом.
+
+```mermaid
+flowchart TD
+    subgraph S0["0. Запуск и Проверка"]
+        H["GET /health"] --> OK["200 OK (Сервисы онлайн)"]
+    end
+
+    subgraph S1["1. Онбординг Бренда"]
+        W["1.1. Сканирование сайта / соцсетей<br>POST /api/v1/projects/analyze"] --> HITL["1.2. Правка пользователем в UI"]
+        HITL --> RAG["1.3. Сохранение в базу знаний<br>POST /api/v1/projects/commit"]
+    end
+
+    subgraph S2["2. Выбор Темы"]
+        PL["2.1. Подсказки в поле ввода<br>GET /api/v1/ideas/placeholders"]
+        IB["2.2. Банк идей<br>GET /api/v1/ideas/bank"]
+        EV["2.3. Защита воронки<br>POST /api/v1/ideas/evaluate-placement"]
+    end
+
+    subgraph S3["3. Генерация Текста и Промпта (Быстро)"]
+        GEN["POST /orchestration/generate<br>(Saiga LLM + Qwen Prompt Builder)"]
+        GEN --> DRAFT["Готовый HTML-текст + Image Specs (0 GPU)"]
+    end
+
+    subgraph S4["4. Ленивый Рендер Изображения (GPU)"]
+        DRAFT --> RND["POST /api/v1/content/render/{post_id}"]
+        RND --> COMFY["ComfyUI: Qwen-Image 2512"]
+        COMFY --> DONE["Готовый пост с картинками в CDN"]
+    end
+
+    S0 --> S1 --> S2 --> S3 --> S4
+```
+
+---
+
+### 🟢 ЭТАП 0: Запуск и проверка доступности сервиса (Healthcheck)
+
+Перед отправкой любых запросов проверьте, что AI-сервер живой.
+
+**1. Команда запуска на сервере (все 4 сервиса в одном процессе):**
+```bash
+cd /opt/ucust && nohup bash start_ai_service.sh > ai_service.log 2>&1 &
+```
+
+**2. Проверка доступности (cURL):**
+```bash
+curl -X GET "http://localhost:8000/health"
+```
+**Ожидаемый ответ (`200 OK`):**
+```json
+{
+  "status": "healthy",
+  "version": "2.7.0",
+  "services": {
+    "gateway": "online",
+    "comfyui": "connected",
+    "octopoda": "ready"
+  }
+}
+```
+
+---
+
+### 🟢 ЭТАП 1: Онбординг проекта (Создание базы знаний бренда)
+
+Чтобы AI писал тексты как профессиональный копирайтер бренда (а не выдавал общие шаблонные фразы), ему нужен контекст компании.
+
+#### Шаг 1.1: Автоматический сбор черновика профиля
+Бэкенд передает ссылку на сайт или соцсети клиента. AI-парсеры извлекают УТП, тон коммуникации, целевую аудиторию и адрес.
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/projects/analyze" \
+  -H "Content-Type: application/json" \
+  -H "X-Internal-Secret: ucust-super-secret-service-token-2026" \
+  -d '{
+    "raw_input": "Кофейня Surf Coffee в Москве, ул. Большая Дмитровка 12. Свежая выпечка, спешелти зерно, дружелюбный вайб.",
+    "links": ["https://surfcoffee.ru"]
+  }'
+```
+
+#### Шаг 1.2: Человек утверждает данные в UI (HITL)
+Пользователь во фронтенде может подправить название, телефон или tone of voice.
+
+#### Шаг 1.3: Фиксация профиля в векторную память (pgvector)
+Бэкенд отправляет подтвержденные данные. AI векторизует их и навсегда привязывает к `project_id`.
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/projects/surf_coffee_101/commit" \
+  -H "Content-Type: application/json" \
+  -H "X-Internal-Secret: ucust-super-secret-service-token-2026" \
+  -d '{
+    "data": {
+      "about": { "name": "Surf Coffee", "niche": "Спешелти кофейня", "city": "Москва" },
+      "audience": { "target": "Молодые специалисты, любители качественного кофе" },
+      "offerings": { "main_products": ["Фильтр-кофе", "Матча латте", "Круассаны"] },
+      "voice": { "tone": "Дружелюбный, теплый, стильный" }
+    }
+  }'
+```
+
+---
+
+### 🟢 ЭТАП 2: Подбор актуальной темы (Банк Идей и Плейсхолдеры)
+
+Когда пользователь открывает страницу создания поста:
+
+#### Шаг 2.1: Подгрузка умных подсказок в поле ввода (Tab Auto-complete)
+При загрузке формы бэкенд запрашивает 3–5 актуальных инфоповодов на сегодня и ближайшие дни:
+```bash
+curl -X GET "http://localhost:8000/api/v1/ideas/placeholders?niche=Кофейня&company_name=Surf%20Coffee&limit=3"
+```
+*Фронтенд вставляет текст в `placeholder` инпута. При нажатии `Tab` подставляется готовая тема.*
+
+#### Шаг 2.2: Открытие каталога «Банк быстрых идей» (Drawer)
+Если пользователю нужно вдохновение, открывается боковая панель с готовыми идеями:
+```bash
+curl -X GET "http://localhost:8000/api/v1/ideas/bank?niche=Кофейня&country=россия&days_ahead=21&company_name=Surf%20Coffee"
+```
+
+#### Шаг 2.3: Проверка безопасности воронки (Anti-Collision Check)
+Если пользователь перетаскивает развлекательный мем на день, где запланирована прямая продажа (BOFU-оффер), бэкенд проверяет совместимость:
+```bash
+curl -X POST "http://localhost:8000/api/v1/ideas/evaluate-placement" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "topic": "5 смешных мемов про утренний кофе",
+    "niche": "Кофейня",
+    "company_name": "Surf Coffee",
+    "target_slot_type": "BOFU_DIRECT_OFFER",
+    "is_override_scheduled_slot": true
+  }'
+```
+*Ответ вернет `placement_status: "warning"` и рекомендацию: отправить в черновики, чтобы не сбить продажи.*
+
+---
+
+### 🟢 ЭТАП 3: Мгновенная генерация текста поста (0 GPU overhead)
+
+Бэкенд отправляет один запрос на создание поста. AI оркестратор:
+1. Подтягивает факты из базы знаний проекта (`project_id`).
+2. Применяет маркетинговый фреймворк (PAS, AIDA, BAB) и цензурный фильтр.
+3. Форматирует HTML с телеграм-тегами (`<b>`, `<code>`, `<blockquote expandable>`).
+4. Формирует профессиональный фото-промпт для Qwen-Image 2512.
+
+**Запрос:**
+```bash
+curl -X POST "http://localhost:8000/orchestration/generate" \
+  -H "Content-Type: application/json" \
+  -H "X-Internal-Secret: ucust-super-secret-service-token-2026" \
+  -d '{
+    "projectId": "surf_coffee_101",
+    "companyName": "Surf Coffee",
+    "niche": "Кофейня",
+    "prompt": "Секрет идеального помола для утреннего фильтра",
+    "aspect_ratio": "1:1",
+    "promoCode": "SURF2026",
+    "tone": "Дружелюбный и экспертный"
+  }'
+```
+
+**Ответ приходит за ~0.5–1.5 секунды:**
+```json
+{
+  "status": "success",
+  "data": {
+    "project_id": "surf_coffee_101",
+    "post_draft": {
+      "post_id": "post_78a1bc92",
+      "status": "draft_text",
+      "text_content": "☕ <b>Почему помол решает всё?</b>\n\nСлишком мелкий — кофе горчит. Слишком крупный — напиток водянистый.\n\n<blockquote expandable>\nДля домашней воронки V60 выбирайте помол размером с крупную морскую соль. Это обеспечит экстракцию за 2:45–3:15 минуты и раскроет сладкие ягодные ноты нашего эфиопского зерна.\n</blockquote>\n\nПромокод на пачку недели: <code>SURF2026</code> (скидка 15% на кассе и онлайн).",
+      "critic_score": 0.96,
+      "image_specs": [
+        {
+          "prompt": "A commercial lifestyle photograph of freshly ground specialty coffee beans in a matte white ceramic dosing cup next to an artisan pour-over dripper. Soft morning window light, warm cozy atmosphere, authentic macro textures, 85mm f/1.8 lens shot, zero CGI.",
+          "aspect_ratio": "1:1",
+          "width": 1024,
+          "height": 1024
+        }
+      ]
+    }
+  }
+}
+```
+
+---
+
+### 🟢 ЭТАП 4: Ленивый рендер изображения на GPU (По требованию)
+
+Картинка не генерируется заранее, чтобы экономить ресурсы видеокарты. Рендер запускается **только когда пользователь нажал «Сгенерировать фото» или утвердил пост**.
+
+**1. Запуск рендера:**
+```bash
+curl -X POST "http://localhost:8000/api/v1/content/render/post_78a1bc92"
+```
+
+**2. Проверка готовности (Polling или по Webhook):**
+```bash
+curl -X GET "http://localhost:8000/api/v1/content/post/post_78a1bc92"
+```
+
+**Ответ после завершения генерации:**
+```json
+{
+  "post_id": "post_78a1bc92",
+  "status": "rendered",
+  "rendered_image_urls": [
+    "https://cdn.ucust.com/renders/2026/09/post_78a1bc92_main.webp"
+  ]
+}
+```
+
+---
+
+### 🛠️ Сводная таблица HTTP кодов и ошибок для Бэкендера
+
+| HTTP Код | Причина | Что делать бэкендеру |
+| :--- | :--- | :--- |
+| **`200 OK`** | Успешное выполнение | Распарсить JSON из поля `data` |
+| **`400 Bad Request`** | Не переданы обязательные поля (`prompt`, `url`) | Проверить тело запроса |
+| **`403 Forbidden`** | Неверный заголовок `X-Internal-Secret` | Передать корректный токен из `.env` (`INTERNAL_API_SECRET`) |
+| **`404 Not Found`** | Не найден `post_id` или `project_id` | Убедиться, что пост был сначала создан через `/generate` |
+| **`503 Service Unavailable`** | Модель или ComfyUI временно недоступны | Повторить запрос через 2–3 сек (или включить Celery retry) |
