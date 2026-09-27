@@ -572,6 +572,62 @@ class UnifiedOrchestrator:
                 }
             }
 
+        if task_type in {"get_placeholders", "placeholders", "suggest_placeholders"}:
+            from skills.smart_idea_bank import SmartIdeaBank
+            idea_bank = SmartIdeaBank()
+            niche = user_data.get("niche") or "Бизнес"
+            company_name = user_data.get("company_name") or "UCust"
+            limit = int(user_data.get("limit", 5))
+            placeholders = idea_bank.get_dynamic_placeholders(niche=niche, company_name=company_name, limit=limit)
+            return {
+                "status": "success",
+                "task_type": task_type,
+                "niche": niche,
+                "company_name": company_name,
+                "placeholders": [p.dict() for p in placeholders]
+            }
+
+        if task_type in {"get_idea_bank", "idea_bank", "quick_ideas"}:
+            from skills.smart_idea_bank import SmartIdeaBank
+            idea_bank = SmartIdeaBank()
+            niche = user_data.get("niche") or "Бизнес"
+            country = user_data.get("country") or "россия"
+            days_ahead = int(user_data.get("days_ahead", 21))
+            company_name = user_data.get("company_name") or "UCust"
+            ideas = idea_bank.get_quick_ideas_bank(niche=niche, country=country, days_ahead=days_ahead, company_name=company_name)
+            return {
+                "status": "success",
+                "task_type": task_type,
+                "niche": niche,
+                "country": country,
+                "ideas_count": len(ideas),
+                "ideas": [i.dict() for i in ideas]
+            }
+
+        if task_type in {"evaluate_funnel_placement", "evaluate_placement", "check_funnel_safety"}:
+            from skills.smart_idea_bank import SmartIdeaBank
+            idea_bank = SmartIdeaBank()
+            topic = user_data.get("topic") or user_data.get("prompt") or ""
+            niche = user_data.get("niche") or "Бизнес"
+            company_name = user_data.get("company_name") or "UCust"
+            target_slot_date = user_data.get("target_slot_date")
+            target_slot_type = user_data.get("target_slot_type")
+            is_override = bool(user_data.get("is_override_scheduled_slot", False))
+            
+            verdict = idea_bank.evaluate_funnel_placement(
+                topic=topic,
+                niche=niche,
+                company_name=company_name,
+                target_slot_date=target_slot_date,
+                target_slot_type=target_slot_type,
+                is_override_scheduled_slot=is_override
+            )
+            return {
+                "status": "success",
+                "task_type": task_type,
+                "verdict": verdict.dict()
+            }
+
         if task_type in {"onboarding", "onboard_user", "analyze_brand", "interviewer"}:
             from skills.saiga_llm import SaigaLLMSkill
             from collectors.website_collector import WebsiteCollector

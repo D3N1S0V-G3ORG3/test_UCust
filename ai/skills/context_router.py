@@ -234,7 +234,7 @@ class ContextRouterSkill:
             elif detected_quadrant == QuadrantEnum.B2C_LIFESTYLE:
                 intent_mode = IntentModeEnum.CORE_BUSINESS
                 brand_integration = "high"
-                funnel_lock = FunnelLockEnum.TOFU_UNAWARE if any(w in topic_lower for w in ["атмосфер", "уют", "религ", "церков"]) else FunnelLockEnum.MOFU_SOLUTION
+                funnel_lock = FunnelLockEnum.TOFU_UNAWARE if any(w in topic_lower for w in ["атмосфер", "уют", "религ", "церков", "мем", "праздник", "юмор", "кот", "кошк", "собак"]) else FunnelLockEnum.MOFU_SOLUTION
                 allowed_metrics = AllowedMetricsEnum.CONSUMER_ONLY
                 tone = "warm_hospitable"
                 framework = "StoryBrand"

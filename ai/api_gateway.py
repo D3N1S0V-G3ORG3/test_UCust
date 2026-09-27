@@ -848,6 +848,90 @@ async def get_frontend_graphs():
 
 
 # ============================================================================
+# СМАРТ-БАНК ИДЕЙ И ДИНАМИЧЕСКИЕ ПЛЕЙСХОЛДЕРЫ (FUNNEL-SAFE IDEA ENGINE)
+# ============================================================================
+
+class EvaluatePlacementAPIRequest(BaseModel):
+    topic: str = Field(..., example="Как наша команда отмечает День программиста: закулисье и подарок клиентам")
+    niche: str = Field("IT / Разработка", example="IT / Разработка")
+    company_name: str = Field("UCust", example="UCust")
+    target_slot_date: Optional[str] = None
+    target_slot_type: Optional[str] = None
+    is_override_scheduled_slot: bool = False
+
+
+@app.get("/api/v1/ideas/placeholders", tags=["Smart Idea Bank"])
+async def get_ideas_placeholders(
+    niche: str = Query("Бизнес", description="Ниша бизнеса"),
+    company_name: str = Query("", description="Название бренда/компании"),
+    limit: int = Query(5, ge=1, le=10, description="Количество вариантов плейсхолдера")
+):
+    """
+    💡 ДИНАМИЧЕСКИЕ ПЛЕЙСХОЛДЕРЫ ДЛЯ ПОЛЯ ВВОДА ТЕМЫ:
+    - Подгружает актуальные инфоповоды из календаря и сезонные темы в плейсхолдер.
+    - Пользователь может нажать Tab для мгновенной подстановки темы без поломки календаря.
+    """
+    from skills.smart_idea_bank import SmartIdeaBank
+    idea_bank = SmartIdeaBank()
+    placeholders = idea_bank.get_dynamic_placeholders(niche=niche, company_name=company_name, limit=limit)
+    return {
+        "status": "success",
+        "niche": niche,
+        "company_name": company_name,
+        "placeholders": [p.dict() for p in placeholders]
+    }
+
+
+@app.get("/api/v1/ideas/bank", tags=["Smart Idea Bank"])
+async def get_quick_ideas_bank(
+    niche: str = Query("Бизнес", description="Ниша бизнеса"),
+    country: str = Query("россия", description="Страна для календаря праздников"),
+    days_ahead: int = Query(21, ge=1, le=60, description="Горизонт планирования (в днях)"),
+    company_name: str = Query("", description="Название бренда")
+):
+    """
+    🏦 БАНК БЫСТРЫХ ИДЕЙ (IDEA BANK):
+    - Отделенный от автоматического расписания каталог инфоповодов и ситуативных тем.
+    - Не вмешивается в существующий конверсионный календарь на лету.
+    - Содержит оценку релевантности нише и рекомендации по этапу воронки (TOFU/MOFU/BOFU).
+    """
+    from skills.smart_idea_bank import SmartIdeaBank
+    idea_bank = SmartIdeaBank()
+    ideas = idea_bank.get_quick_ideas_bank(niche=niche, country=country, days_ahead=days_ahead, company_name=company_name)
+    return {
+        "status": "success",
+        "niche": niche,
+        "country": country,
+        "ideas_count": len(ideas),
+        "ideas": [i.dict() for i in ideas]
+    }
+
+
+@app.post("/api/v1/ideas/evaluate-placement", tags=["Smart Idea Bank"])
+async def evaluate_ideas_placement(request: EvaluatePlacementAPIRequest):
+    """
+    🛡️ СОВЕТНИК РАЗМЕЩЕНИЯ ИДЕИ В ВОРОНКУ (FUNNEL INTEGRITY ADVISOR):
+    - Анализирует выбранную тему на совместимость с этапом воронки продаж.
+    - Защищает конверсионные BOFU-слоты от случайного затирания вирусными мемами или праздниками.
+    - Выдает четкий вердикт: сохранить в черновики, поставить в подходящий слот или выпустить внепланово.
+    """
+    from skills.smart_idea_bank import SmartIdeaBank
+    idea_bank = SmartIdeaBank()
+    verdict = idea_bank.evaluate_funnel_placement(
+        topic=request.topic,
+        niche=request.niche,
+        company_name=request.company_name,
+        target_slot_date=request.target_slot_date,
+        target_slot_type=request.target_slot_type,
+        is_override_scheduled_slot=request.is_override_scheduled_slot
+    )
+    return {
+        "status": "success",
+        "verdict": verdict.dict()
+    }
+
+
+# ============================================================================
 # ДИАГНОСТИКА VRAM И АДАПТИВНОГО ПЛАНИРОВЩИКА GPU
 # ============================================================================
 
