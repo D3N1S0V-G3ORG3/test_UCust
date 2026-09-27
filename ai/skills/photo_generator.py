@@ -399,6 +399,7 @@ class QwenPromptAssembler:
     def get_negative_prompt(cls, scene_type: str = "general") -> str:
         """
         Формирует лаконичный и точный Negative Prompt по стандартам Qwen-Image 2512.
+        Включает защиту от малинового румянца, пластикового тела, инверсии резкости фона и галлюцинаций.
         """
         base_negative = [
             "blurry", "low quality", "pixelated", "distorted",
@@ -407,19 +408,22 @@ class QwenPromptAssembler:
         ]
         if scene_type in {"portrait", "human", "beauty", "lifestyle"}:
             base_negative.extend([
-                "smooth plastic skin", "airbrushed face", "extra fingers", "deformed hands",
-                "mutated hands", "fused fingers", "missing phalanges", "unnatural proportions",
-                "stiff wire-like hair", "cross-eyed", "wandering gaze",
-                "same face syndrome", "identical faces", "mannequin", "wax figure"
+                "smooth plastic skin", "airbrushed face", "plastic chest skin", "airbrushed body", "blurry decollete",
+                "bright pink blush", "intense rosy cheeks", "sunburn", "clown makeup", "painted blush", "rosacea", "unnatural cheek redness",
+                "extra fingers", "deformed hands", "mutated hands", "fused fingers", "missing phalanges", "unnatural proportions",
+                "stiff wire-like hair", "cross-eyed", "wandering gaze", "asymmetrical pupils",
+                "same face syndrome", "identical faces", "mannequin", "wax figure",
+                "sharp detailed background", "background noise", "floating objects", "deformed furniture", "deformed wall sockets", "disconnected wires"
             ])
         elif scene_type in {"product", "culinary", "still_life"}:
             base_negative.extend([
                 "unrealistic reflections", "fake materials", "poor lighting",
-                "artificial repetitive pattern", "out of place objects"
+                "artificial repetitive pattern", "out of place objects",
+                "sharp detailed background", "floating objects"
             ])
         elif scene_type in {"text", "poster", "signage"}:
             base_negative.extend([
-                "misspelled text", "garbled letters", "unreadable font"
+                "misspelled text", "garbled letters", "unreadable font", "gibberish text", "blurry typography", "double letters"
             ])
         return ", ".join(base_negative)
 
@@ -475,7 +479,7 @@ class QwenPromptAssembler:
             sentences.append(f"The scene is illuminated by {light_clean}, casting soft natural directional micro-shadows with realistic room contrast.")
 
             # 4. Оптика, камера и текстура (без CGI / пластика)
-            hair_and_skin = "smooth neatly styled hair strands with natural soft shine, authentic real human skin texture with subtle micro-imperfections and natural tone"
+            hair_and_skin = "smooth neatly styled hair strands with natural soft shine, consistent detailed authentic human skin texture across face neck and shoulders with natural micro-pores, subtle neutral skin tone without harsh redness"
             extra_part = f"{optics_extra_clean}, " if optics_extra_clean else ""
             sentences.append(f"Captured with {lens} from a {perspective} with {dof}, featuring {extra_part}{hair_and_skin}, authentic human gaze, unedited snapshot clarity, zero CGI.")
         else:
@@ -1414,12 +1418,19 @@ class PhotoGeneratorSkill:
     """
 
     ASPECT_RATIOS = {
-        "1:1": (1152, 1152),
-        "4:5": (1024, 1280),
-        "16:9": (1344, 768),
-        "9:16": (768, 1344),
-        "3:4": (960, 1280),
-        "4:3": (1280, 960)
+        "1:1": (1024, 1024),
+        "4:5": (896, 1152),
+        "16:9": (1360, 768),
+        "9:16": (768, 1360),
+        "3:4": (896, 1216),
+        "4:3": (1216, 896)
+    }
+
+    UPSCALED_RESOLUTIONS = {
+        "1:1": (1536, 1536),
+        "9:16": (1080, 1920),
+        "16:9": (1920, 1080),
+        "4:5": (1344, 1728)
     }
 
     NICHE_PRESETS = {
@@ -1576,6 +1587,10 @@ class PhotoGeneratorSkill:
         "smartphone, phone screen, holding smartphone, camera UI, viewfinder, bezel, device mockup, "
         "spiral lines, golden spiral overlay, graphic circle lines, diagram, geometric curves, grid overlay, "
         "staged studio photoshoot, heavy artificial studio strobes, studio softboxes, "
+        "bright pink blush, intense rosy cheeks, sunburn, clown makeup, painted blush, rosacea, unnatural cheek redness, "
+        "plastic chest skin, airbrushed body, blurry decollete, smooth plastic skin, airbrushed face, "
+        "sharp detailed background, background noise, high-frequency background grain, floating objects, deformed furniture, deformed wall sockets, disconnected wires, "
+        "gibberish text, misspelled letters, blurry typography, double letters, deformed writing, "
         "nsfw, nude, naked, explicit, bad anatomy, deformed fingers, extra limbs, blurry face, bad eyes, "
         "low quality, oversaturated, plastic 3d render, watermark, text, signature"
     )
