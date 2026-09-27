@@ -1552,3 +1552,64 @@ curl -X POST "http://localhost:8000/api/v1/publishers/poll" \
 }
 ```
 
+---
+
+## 10. База знаний Visual QA: Каталог дефектов генерации (Qwen-Image / Flux / ComfyUI) и методы их предотвращения
+
+В ходе глубокого стресс-тестирования генеративного конвейера Qwen-Image 2512, сэмплеров (KSampler Euler vs Clownshark), LoRA RealSkinFix и двухпроходного апскейла были выявлены ключевые дефекты генерации. Ниже зафиксирована полная инженерная матрица проблем, их причины и правила предотвращения.
+
+---
+
+### 10.1. Сводная матрица выявленных дефектов и решений
+
+| # | Название дефекта | Визуальные симптомы | Причина в воркфлоу / промте | Решение и превентивные меры |
+| :- | :--- | :--- | :--- | :--- |
+| **1** | **Паразитный шум на волосах и глазах** | Паутинный, «фризовый» шум на прядях, потеря гладкости радужки. | Стохастический шум `eta = 0.5` в `ClownsharKSampler` при 30–50 шагах. | Использовать детерминированный `KSampler` (`sampler: euler`, `scheduler: simple`, `cfg: 3.0`). Clownshark применять только для шероховатых фактур (камень, кора). |
+| **2** | **Токсично-малиновый румянец / ожог** | Резкие розово-красные полосы на щеках и переносице, похожие на ожог или грим. | Слова `rosy cheeks`, `wind flush` в позитивном промте или перекос стиля Realism. | В Positive: `subtle natural skin tone, neutral skin undertone`. В Negative: `bright pink blush, intense rosy cheeks, sunburn, clown makeup, painted blush, rosacea, unnatural cheek redness`. |
+| **3** | **Слипание кистей рук («Культя»)** | Слипшиеся фаланги пальцев, монолитный кулак при сложном двуручном хвате (зонт, ручки). | Недостаток пространственного внимания модели на перекрещивающихся пальцах без ControlNet. | Для сложных хватов: макро/POV-ракурсы, раздельное описание кистей (`holding cup with distinct fingers, visible knuckle joints`) + Inpainting / OpenPose. |
+| **4** | **Пластиковое тело («Divergent Skin Texture»)** | Лицо детализировано (поры `Laplacian: 226`), а декольте и плечи полностью замылены (`Laplacian: 32`). | Неравномерное действие LoRA RealSkinFix и отсутствие спецификации текстуры тела в промте. | В Positive: `consistent detailed skin texture across face, neck and shoulders, natural micro-pores`. LoRA RealSkinFix держать в диапазоне `0.95 – 1.05`. |
+| **5** | **Инверсия глубины резкости (DOF Inversion)** | Задний план (полки, книги, столы) в 2 раза резче и шумнее (`Laplacian: 443`), чем передний план. | Отсутствие оптических модификаторов глубины резкости в промте; овершарп мелких объектов фона. | В Positive: `f/1.8 aperture, shallow depth of field, soft optical background bokeh`. В Negative: `sharp detailed background, background noise, high-frequency background grain`. |
+| **6** | **Стирание композиции при апскейле** | При включении Upscale-нод изображение полностью меняется, лица и окружение генерируются заново. | Ошибка в параметре: `denoise = 1.0` в ноде `KSampler` второго прохода. | Во втором `KSampler` ставить строго `denoise: 0.28 – 0.35` (максимум 0.40), `steps: 15–20`. |
+| **7** | **Галлюцинации мелких объектов фона** | Летающие подушки, прерывающиеся балки кровати, кривые розетки и вилки на стене. | Модель пытается додумать сложный интерьер без явных инструкций в промте. | В Negative: `floating objects, deformed furniture, broken perspective, disconnected wires, deformed wall sockets`. |
+| **8** | **Искажение и размытие текста** | Двоящиеся буквы, нечитаемая абракадабра на стаканчиках и витринах. | Промт задан без кавычек и без явного указания стиля шрифта. | Брать текст в строгие кавычки `""`, указывать материал (`handwritten black marker on kraft sleeve "Text"`, `vintage gold painted lettering "Text"`). В Negative: `gibberish text, misspelled letters, blurry typography`. |
+
+---
+
+### 10.2. Стандарты разрешения и соотношений сторон (Aspect Ratios)
+
+Для предотвращения анатомических растяжений (вытянутая шея, сплюснутые плечи) генерация всегда выполняется в два этапа:
+
+```mermaid
+flowchart LR
+    A["Step 1: Base Latent<br>(EmptySD3LatentImage)"] --> B["Step 2: Base KSampler<br>(steps: 30, cfg: 3.0, denoise: 1.0)"]
+    B --> C["Step 3: VAE Decode Tiled"]
+    C --> D["Step 4: Image Scale / Model Upscale (1.5x)"]
+    D --> E["Step 5: VAE Encode"]
+    E --> F["Step 6: Refine KSampler<br>(steps: 15, cfg: 3.0, denoise: 0.30)"]
+    F --> G["Step 7: Final VAE Decode Tiled"]
+```
+
+#### Таблица рабочих разрешений:
+* **Квадрат 1:1 (Посты, каталоги, аватары):**
+  * Базовый Latent: `1024 × 1024`
+  * После Upscale 1.5x: `1536 × 1536`
+* **Вертикаль 9:16 (Stories, Reels, Shorts):**
+  * Базовый Latent: `768 × 1360` (или `720 × 1280`)
+  * После Upscale 1.5x: `1080 × 1920` (Full HD)
+* **Горизонталь 16:9 (Баннеры, YouTube, обложки):**
+  * Базовый Latent: `1360 × 768` (или `1280 × 720`)
+  * После Upscale 1.5x: `1920 × 1080` (Full HD)
+
+---
+
+### 10.3. Референсный золотой шаблон промта (Golden Prompt Template)
+
+```text
+Positive Prompt:
+[План съемки, объект и действие], [мимика и естественные черты лица, subtle natural skin tone], [одежда и материалы с фактурой], [текстовые надписи в кавычках "" с указанием стиля шрифта], [освещение и физика среды (пар, мокрый асфальт, капли)], consistent detailed skin texture across face neck and shoulders, natural skin micro-pores, f/1.8 aperture, shallow depth of field, soft optical background bokeh, professional photography
+
+Negative Prompt:
+bright pink blush, intense rosy cheeks, sunburn, clown makeup, painted blush, rosacea, unnatural cheek redness, plastic skin, airbrushed body, blurry decollete, deformed hands, fused fingers, missing fingers, extra digits, asymmetrical pupils, crossed eyes, gibberish text, misspelled letters, blurry typography, sharp detailed background, floating objects, deformed furniture, background noise
+```
+
+
