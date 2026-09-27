@@ -396,6 +396,24 @@ class ComfyCLIRunner:
                         if isinstance(node["widgets_values"][1], (int, float)) and node["widgets_values"][1] > 0.3:
                             node["widgets_values"][1] = 0.15
 
+                # 10. ModelSamplingAuraFlow (Qwen-Image 2512 shift=3.10 optimization)
+                if "ModelSamplingAuraFlow" in node_type or node_type == "ModelSamplingSD3":
+                    if "widgets_values_named" in node and "shift" in node["widgets_values_named"]:
+                        node["widgets_values_named"]["shift"] = 3.10
+                    if "widgets_values" in node and len(node["widgets_values"]) >= 1:
+                        node["widgets_values"][0] = 3.10
+
+                # 11. VAEDecodeTiled (tile_size=512, overlap=64)
+                if "VAEDecodeTiled" in node_type:
+                    if "widgets_values_named" in node:
+                        if "tile_size" in node["widgets_values_named"]:
+                            node["widgets_values_named"]["tile_size"] = 512
+                        if "overlap" in node["widgets_values_named"]:
+                            node["widgets_values_named"]["overlap"] = 64
+                    if "widgets_values" in node and len(node["widgets_values"]) >= 2:
+                        node["widgets_values"][0] = 512
+                        node["widgets_values"][1] = 64
+
             logger.info(
                 "Customized ComfyUI Realism 2.0 graph: edit_mode=%s, images=[%s, %s, %s], prompt='%s...', seed=%d, size=%dx%d",
                 is_edit, img1, img2, img3, photo_prompt[:40], chosen_seed, width, height
@@ -435,6 +453,15 @@ class ComfyCLIRunner:
                         inputs["steps"] = 30
                     if "cfg" in inputs:
                         inputs["cfg"] = 3.2 if has_human else 3.8
+
+                if class_type in {"ModelSamplingAuraFlow", "ModelSamplingSD3"} and "shift" in inputs:
+                    inputs["shift"] = 3.10
+
+                if class_type == "VAEDecodeTiled":
+                    if "tile_size" in inputs:
+                        inputs["tile_size"] = 512
+                    if "overlap" in inputs:
+                        inputs["overlap"] = 64
 
 
                 if class_type in {"FreeU", "FreeU_V2", "FreeUAdvanced"}:

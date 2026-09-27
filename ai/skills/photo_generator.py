@@ -306,42 +306,192 @@ class CinematicAestheticCore:
         color_rhyme: Dict[str, str],
         is_human: bool = False,
         rag_brand_anchors: str = "",
-        optics_extra: str = ""
+        optics_extra: str = "",
+        scene_type: Optional[str] = None
     ) -> str:
         """
-        Собирает 5-слойный эталонный промпт кинематографического уровня (Grammy/Hasselblad Grade).
+        Обратная совместимость: делегирует в современный QwenPromptAssembler.
         """
-        # Слой 1: Кинематика и Герой с цветовой рифмой
-        hero_block = f"Analog film photograph, candid shot of {subject}{rag_brand_anchors}."
-
-        # Слой 2 & 3: Пространственная глубина и интерьерная рифма
-        depth_block = (
-            f"{foreground_anchor}, "
-            f"shot on {camera_optics['lens']}, {camera_optics['dof']}, "
-            f"{environment}, on {surface}, {background}, with {color_rhyme['interior']}"
+        return QwenPromptAssembler.build(
+            subject=subject,
+            environment=environment,
+            surface=surface,
+            background=background,
+            foreground_anchor=foreground_anchor,
+            camera_optics=camera_optics,
+            lighting_anchor=lighting_anchor,
+            color_rhyme=color_rhyme,
+            is_human=is_human,
+            rag_brand_anchors=rag_brand_anchors,
+            optics_extra=optics_extra,
+            scene_type=scene_type
         )
 
-        # Слой 4: Физика света и объемный спад
-        lighting_block = f"crystal clear ambient room air, {lighting_anchor}, soft directional micro-shadows with natural volumetric falloff into rich dark shadows"
+class QwenPromptAssembler:
+    """
+    Генератор промптов нового поколения под мультимодальную модель Qwen-Image 2512 (Qwen-2.5-VL 7B text encoder).
+    
+    Принципы Qwen-Image 2512:
+    1. Связный естественный язык (Natural English Sentences) вместо набора тегов (comma-separated tag salad).
+    2. Шестикомпонентная формула:
+       Промпт = Субъект + Мимика/Поза + Одежда/Материалы + Окружение/Сцена + Свет/Атмосфера + Оптика/Камера
+    3. Синтаксическая привязка атрибутов (Adjective-Noun Binding) через синтагмы предложения.
+    4. Отсутствие конфликта альтернатив / суперпозиции (no 'or', 'either', 'maybe').
+    5. Четкая пространственная локализация ('in the foreground', 'holding in hands', 'behind').
+    6. Выделение текста в строгие двойные кавычки ("TEXT") с явным указанием объекта-носителя.
+    7. Рекомендации параметров сэмплинга: CFG 3.0-3.5 (люди/кожа), 4.0-5.0 (продукты/пейзажи), ModelSamplingAuraFlow shift=3.10.
+    """
 
-        # Слой 5: Аналоговая текстурность, Subsurface Scattering и пленочное зерно Portra 400
-        if is_human:
-            texture_block = (
-                f"{optics_extra}"
-                "(subsurface scattering, authentic real skin texture:1.25), (visible micro skin pores:1.2), "
-                "subtle natural skin blemishes, uneven natural skin tone, (35mm RAW film grain, ISO 400:1.15), "
-                "fine individual hair strands, natural non-plastic skin, subtle facial asymmetry, "
-                "authentic human gaze, unedited analog photography, zero cgi, zero digital art, zero anime"
-            )
+    @classmethod
+    def clean_tags_to_natural_text(cls, text: str) -> str:
+        """
+        Преобразует устаревшие теги SDXL с весами (напр. '(text:1.2)') в чистый связный английский текст.
+        Устраняет суперпозиции (or/either) и чистит лишние знаки.
+        """
+        if not text:
+            return ""
+        # 1. Убираем синтаксис весов ComfyUI/A1111: (phrase:1.25) -> phrase
+        cleaned = re.sub(r'\(([^:]+?)(?::\d+(?:\.\d+)?)?\)', r'\1', text)
+        # 2. Убираем двойные скобки если остались
+        cleaned = re.sub(r'[\(\)]', '', cleaned)
+        # 3. Нормализация суперпозиций и неопределенностей
+        cleaned = re.sub(r'\b(either|maybe)\b', '', cleaned, flags=re.IGNORECASE)
+        # 4. Нормализация кавычек в строгие двойные прямые кавычки ""
+        cleaned = re.sub(r'[«»“”„"]', '"', cleaned)
+        # 5. Очистка двойных пробелов и запятых
+        cleaned = re.sub(r'\s*,\s*', ', ', cleaned)
+        cleaned = re.sub(r'\s{2,}', ' ', cleaned).strip()
+        cleaned = re.sub(r'^,\s*', '', cleaned)
+        cleaned = re.sub(r',\s*$', '', cleaned)
+        return cleaned
+
+    @classmethod
+    def get_sampling_config(cls, scene_type: str = "general") -> Dict[str, Any]:
+        """
+        Оптимальные параметры генерации для Qwen-Image 2512 в ComfyUI.
+        """
+        if scene_type in {"portrait", "human", "lifestyle", "beauty"}:
+            cfg = 3.2
+            steps = 35
+        elif scene_type in {"text", "typography", "signage", "poster"}:
+            cfg = 6.0
+            steps = 50
+        elif scene_type in {"product", "culinary", "still_life"}:
+            cfg = 4.5
+            steps = 40
         else:
-            texture_block = (
-                f"{optics_extra}"
-                "(subsurface scattering on organic surfaces:1.2), tactile material micro-texture, "
-                "physical surface imperfections and realistic specular highlights, (35mm RAW film grain, ISO 400:1.15), "
-                "authentic analog depth, zero cgi, zero 3d render, zero plastic sheen"
-            )
+            cfg = 4.0
+            steps = 35
 
-        return f"{hero_block} {depth_block}, {lighting_block}, {texture_block}."
+        return {
+            "cfg": cfg,
+            "steps": steps,
+            "sampler_name": "euler",
+            "scheduler": "normal",
+            "model_sampling_auraflow_shift": 3.10,
+            "vae_tile_size": 512,
+            "vae_tile_overlap": 64,
+            "lora_real_skin_fix_max_weight": 0.85,
+            "lora_lightning_steps": 4
+        }
+
+    @classmethod
+    def get_negative_prompt(cls, scene_type: str = "general") -> str:
+        """
+        Формирует лаконичный и точный Negative Prompt по стандартам Qwen-Image 2512.
+        """
+        base_negative = [
+            "blurry", "low quality", "pixelated", "distorted",
+            "watermark", "text overlay", "signature",
+            "oversaturated", "artificial", "plastic-looking", "3D render", "CGI", "cartoon", "anime"
+        ]
+        if scene_type in {"portrait", "human", "beauty", "lifestyle"}:
+            base_negative.extend([
+                "smooth plastic skin", "airbrushed face", "extra fingers", "deformed hands",
+                "mutated hands", "fused fingers", "missing phalanges", "unnatural proportions",
+                "stiff wire-like hair", "cross-eyed", "wandering gaze",
+                "same face syndrome", "identical faces", "mannequin", "wax figure"
+            ])
+        elif scene_type in {"product", "culinary", "still_life"}:
+            base_negative.extend([
+                "unrealistic reflections", "fake materials", "poor lighting",
+                "artificial repetitive pattern", "out of place objects"
+            ])
+        elif scene_type in {"text", "poster", "signage"}:
+            base_negative.extend([
+                "misspelled text", "garbled letters", "unreadable font"
+            ])
+        return ", ".join(base_negative)
+
+    @classmethod
+    def build(
+        cls,
+        subject: str,
+        environment: str,
+        surface: str,
+        background: str,
+        foreground_anchor: str,
+        camera_optics: Dict[str, str],
+        lighting_anchor: str,
+        color_rhyme: Dict[str, str],
+        is_human: bool = False,
+        rag_brand_anchors: str = "",
+        optics_extra: str = "",
+        scene_type: Optional[str] = None
+    ) -> str:
+        """
+        Сборка 6-компонентного структурированного промпта на естественном английском языке:
+        Промпт = Субъект + Мимика/Поза + Одежда/Материал + Окружение + Свет/Атмосфера + Камера/Оптика
+        """
+        subj_clean = cls.clean_tags_to_natural_text(subject)
+        env_clean = cls.clean_tags_to_natural_text(environment)
+        surf_clean = cls.clean_tags_to_natural_text(surface)
+        bg_clean = cls.clean_tags_to_natural_text(background)
+        fg_clean = cls.clean_tags_to_natural_text(foreground_anchor)
+        rag_clean = cls.clean_tags_to_natural_text(rag_brand_anchors)
+        light_clean = cls.clean_tags_to_natural_text(lighting_anchor)
+        optics_extra_clean = cls.clean_tags_to_natural_text(optics_extra)
+
+        lens = camera_optics.get("lens", "35mm prime lens")
+        dof = camera_optics.get("dof", "natural optical depth of field")
+        perspective = camera_optics.get("perspective", "candid eye-level perspective")
+
+        interior_rhyme = color_rhyme.get("interior", "")
+        garment_rhyme = color_rhyme.get("garment", "")
+
+        sentences = []
+
+        if is_human:
+            # 1. Субъект, мимика, поза, одежда
+            rag_part = f", {rag_clean.lstrip(', ')}" if rag_clean else ""
+            garment_part = f", wearing {garment_rhyme}" if garment_rhyme else ""
+            sentences.append(f"A candid photograph of {subj_clean}{rag_part}{garment_part}.")
+
+            # 2. Окружение, глубина и передний план
+            fg_part = f"In the foreground, {fg_clean} frames the scene. " if fg_clean else ""
+            sentences.append(f"{fg_part}The subject is positioned in {env_clean} on {surf_clean}, with {bg_clean} and {interior_rhyme} in soft background.")
+
+            # 3. Свет и атмосфера
+            sentences.append(f"The scene is illuminated by {light_clean}, casting soft natural directional micro-shadows with realistic room contrast.")
+
+            # 4. Оптика, камера и текстура (без CGI / пластика)
+            hair_and_skin = "smooth neatly styled hair strands with natural soft shine, authentic real human skin texture with subtle micro-imperfections and natural tone"
+            extra_part = f"{optics_extra_clean}, " if optics_extra_clean else ""
+            sentences.append(f"Captured with {lens} from a {perspective} with {dof}, featuring {extra_part}{hair_and_skin}, authentic human gaze, unedited snapshot clarity, zero CGI.")
+        else:
+            # Предметная съемка / Еда / Животные / Пейзаж
+            rag_part = f", {rag_clean.lstrip(', ')}" if rag_clean else ""
+            sentences.append(f"A commercial photograph of {subj_clean}{rag_part}.")
+
+            fg_part = f"In the foreground, {fg_clean} creates layered depth. " if fg_clean else ""
+            sentences.append(f"{fg_part}The subject rests on {surf_clean} in {env_clean}, surrounded by {bg_clean} and {interior_rhyme}.")
+
+            sentences.append(f"Bathed in {light_clean}, creating authentic volumetric light falloff and rich natural shadows.")
+
+            extra_part = f"{optics_extra_clean}, " if optics_extra_clean else ""
+            sentences.append(f"Shot on {lens} with {dof}, showcasing {extra_part}tactile material micro-textures, genuine physical reflections, sharp focus, zero CGI.")
+
+        return " ".join(sentences)
 
 
 class CinematographyDirector:
@@ -1222,12 +1372,27 @@ class CinematographyDirector:
                 optics_extra=""
             )
 
+        if is_human_scene:
+            scene_type = "human"
+        elif any(w in topic_lower for w in ["постер", "вывеск", "плакат", "баннер", "надпись", "текст", "лого", "sign", "poster", "billboard"]):
+            scene_type = "text"
+        elif any(w in topic_lower or w in niche_lower for w in ["кофе", "десерт", "стейк", "кулинар", "еда", "блюдо", "товар", "продукт", "крем", "плата", "esp32"]):
+            scene_type = "product"
+        else:
+            scene_type = "general"
+
+        sampling_config = QwenPromptAssembler.get_sampling_config(scene_type)
+        qwen_negative = QwenPromptAssembler.get_negative_prompt(scene_type)
+
         return {
             "prompt": full_prompt,
+            "negative_prompt": qwen_negative,
+            "sampling_config": sampling_config,
             "lighting_scheme": light_key,
             "color_harmony": color_key,
             "composition": comp_key,
-            "perspective": persp_key
+            "perspective": persp_key,
+            "scene_type": scene_type
         }
 
 

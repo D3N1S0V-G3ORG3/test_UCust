@@ -124,26 +124,28 @@ class AdvancedVisualDirector:
         style: str = "candid_iphone"
     ) -> Dict[str, str]:
         """
-        Собирает живой, аутентичный промпт по стандарту мобильной фотографии на iPhone
-        (естественный дневной свет, без искусственного студийного блеска, живая текстура).
+        Собирает живой, аутентичный промпт по стандартам Qwen-Image 2512 на естественном английском языке
+        (6-компонентная формула: Субъект + Мимика/Поза + Одежда/Материалы + Окружение + Свет + Камера).
         """
         colors = brand_colors or self.brand_colors
-        colors_str = f"Subtle natural color accents: {', '.join(colors)}. " if colors else ""
+        colors_str = f"with subtle brand color accents in {', '.join(colors)}" if colors else ""
+
+        # Определение типа сцены для Negative Prompt
+        is_human = any(
+            w in topic.lower() for w in [
+                "человек", "девушк", "парен", "мужчин", "женщин", "портрет", "клиент", "мастер", "врач", "бариста"
+            ]
+        )
+        scene_type = "human" if is_human else "general"
+
+        from skills.photo_generator import QwenPromptAssembler
+        negative_prompt = QwenPromptAssembler.get_negative_prompt(scene_type)
 
         positive_prompt = (
-            f"Authentic candid smartphone photograph for {niche}, shot on iPhone 16 Pro, 24mm main camera, natural eye-level handheld perspective. "
-            f"Subject: {topic.strip()}. {colors_str}"
-            f"Visible natural real-life textures, gentle ambient window daylight, realistic room shadows, "
-            f"organic depth of field, authentic UGC social media aesthetic, unedited camera roll RAW photo."
-        )
-
-        negative_prompt = (
-            "volumetric fog, cinematic haze, floating dust motes, cyan and orange contrast lighting, cyberpunk neon, plastic skin, "
-            "multiple people staring at screen, unnatural forced smiles, CGI, 3D render, oversaturated, dark basement, cluttered desk, artificial blue lighting, "
-            "identical faces, cloned faces, twin faces, duplicate people, same face syndrome, "
-            "staged studio photoshoot, heavy artificial studio strobes, studio softboxes, "
-            "smooth skin, airbrushed, wax figure, mannequin, 3d render, cgi, cartoon, anime, illustration, "
-            "overly smooth, fake lighting, high contrast, perfect skin, bad anatomy, deformed hands, watermark"
+            f"A candid commercial photograph representing {niche}. "
+            f"The subject is {topic.strip()} {colors_str}. "
+            f"Captured in a realistic natural environment with soft ambient daylight, subtle micro-shadows, and authentic room contrast. "
+            f"Shot on a 24mm smartphone camera with natural depth of field, genuine real-life textures, unedited raw snapshot aesthetic, zero CGI."
         )
 
         return {
