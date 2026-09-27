@@ -1350,9 +1350,26 @@ class UnifiedOrchestrator:
                     data_richness_score = drs_assessment.total_score / 100.0
                     print(f"[UnifiedOrchestrator] 📚 RAG контекст: {len(rag_fact_context)} симв. | DRS Score: {drs_assessment.total_score}/100 ({drs_assessment.tier.value.upper()}) | {drs_assessment.recommendation}")
                 else:
-                    drs_assessment = DataRichnessEngine.evaluate_text(prompt, company_name=company_name)
+                    # Агрегируем бриф, оффер и данные анкеты профиля для полноценной оценки плотности
+                    profile_parts = [prompt]
+                    if company_name and company_name != "Клиент":
+                        profile_parts.append(f"Компания: {company_name}")
+                    if niche:
+                        profile_parts.append(f"Ниша: {niche}")
+                    if offer:
+                        profile_parts.append(f"Оффер: {offer}")
+                    if isinstance(user_data, dict):
+                        for k, v in user_data.items():
+                            if isinstance(v, str) and v:
+                                profile_parts.append(f"{k}: {v}")
+                            elif isinstance(v, dict):
+                                for sub_k, sub_v in v.items():
+                                    if sub_v and isinstance(sub_v, str):
+                                        profile_parts.append(f"{sub_k}: {sub_v}")
+                    combined_brief = "\n".join(profile_parts)
+                    drs_assessment = DataRichnessEngine.evaluate_text(combined_brief, company_name=company_name)
                     data_richness_score = drs_assessment.total_score / 100.0
-                    print(f"[DataRichnessGate] ⚠️ Плотность данных RAG: {drs_assessment.total_score}/100 ({drs_assessment.tier.value.upper()}). {drs_assessment.recommendation}")
+                    print(f"[DataRichnessGate] ℹ️ Плотность данных профиля/брифа: {drs_assessment.total_score}/100 ({drs_assessment.tier.value.upper()}). {drs_assessment.recommendation}")
             except Exception as rag_err:
                 print(f"[UnifiedOrchestrator] ⚠️ RAG query error: {rag_err}")
             

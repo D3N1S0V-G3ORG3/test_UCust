@@ -63,6 +63,24 @@ class CriticMungerSkill:
         text_clean = text.strip()
         text_lower = text_clean.lower()
         lines = [line.strip() for line in text_clean.splitlines() if line.strip()]
+        # -1. SUBSTANCE DEPTH & ANTI-ECHO GATEKEEPER
+        if len(text_clean) < 100 or len(lines) < 3:
+            score -= 0.40
+            fatal_flaws.append("Thin Content: Текст слишком поверхностный (<100 символов) или содержит менее 3 смысловых строк.")
+            audit_breakdown['substance_depth'] = False
+        else:
+            audit_breakdown['substance_depth'] = True
+
+        if topic and len(topic.strip()) > 10:
+            topic_clean = topic.strip().lower()
+            if text_lower == topic_clean or (len(text_clean) < len(topic.strip()) * 1.5 and topic_clean in text_lower):
+                score -= 0.45
+                fatal_flaws.append("Echo of Brief: Текст является тривиальным эхо-повтором темы брифа без добавленной пользы.")
+                audit_breakdown['anti_echo'] = False
+            else:
+                audit_breakdown['anti_echo'] = True
+        else:
+            audit_breakdown['anti_echo'] = True
 
         # 0. 4-QUADRANT LEXICON GATEKEEPER (Regex Filter, <1 ms)
         forbidden_patterns = []

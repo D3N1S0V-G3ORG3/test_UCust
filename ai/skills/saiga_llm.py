@@ -60,9 +60,12 @@ class SaigaLLMSkill:
 
             try:
                 resolved_path = self._resolve_path(self.model_path)
-                if os.path.exists(resolved_path):
+                if resolved_path and os.path.exists(resolved_path):
+                    file_size_mb = os.path.getsize(resolved_path) / (1024 * 1024)
+                    print(f"[SaigaSkill] 🚀 Загрузка весов Saiga NeMo 12B BF16 из {resolved_path} ({file_size_mb:.1f} MB)...")
+                    if file_size_mb < 50:
+                        print(f"[SaigaSkill] ⚠️ ВНИМАНИЕ: Файл {resolved_path} подозрительно мал ({file_size_mb:.2f} MB). Проверьте наличие полных весов .gguf.bak.")
                     from llama_cpp import Llama
-                    print(f"[SaigaSkill] 🚀 Загрузка весов Saiga NeMo 12B BF16 из {resolved_path}...")
                     SaigaLLMSkill._shared_llm = Llama(
                         model_path=resolved_path,
                         n_ctx=min(4096, self.max_tokens * 4),
@@ -73,46 +76,71 @@ class SaigaLLMSkill:
                     self._llm = SaigaLLMSkill._shared_llm
                     self._is_loaded = True
                     print(f"[SaigaSkill] ✅ Модель Saiga NeMo 12B BF16 успешно загружена в Singleton-пул памяти!")
+                else:
+                    print(f"[SaigaSkill] ℹ️ Файл модели Saiga не найден по пути '{resolved_path}'. Работает высокоскоростной Rule-Based fallback.")
             except Exception as e:
-                pass
+                print(f"[SaigaSkill] ❌ Ошибка при загрузке модели Saiga ({e}). Переключение на адаптивный fallback-генератор.")
+                logger.warning("Saiga LLM load failed: %s", e)
 
     def _resolve_path(self, path_str: str) -> str:
+        # 1. Если передан существующий путь
         if os.path.exists(path_str):
+            # Проверка на битый stub-файл (< 10 MB)
+            if os.path.getsize(path_str) < 10 * 1024 * 1024 and os.path.exists(path_str + ".bak"):
+                print(f"[SaigaSkill] 🔄 Обнаружен битый stub-файл ({os.path.getsize(path_str)} B). Автоматически выбираем резервную копию: {path_str}.bak")
+                return path_str + ".bak"
             return path_str
+
         base_dir = os.path.dirname(os.path.abspath(__file__))
         alt_ai = os.path.normpath(os.path.join(base_dir, "..", path_str))
         if os.path.exists(alt_ai):
+            if os.path.getsize(alt_ai) < 10 * 1024 * 1024 and os.path.exists(alt_ai + ".bak"):
+                return alt_ai + ".bak"
             return alt_ai
+
         alt_repo = os.path.normpath(os.path.join(base_dir, "..", "..", path_str))
         if os.path.exists(alt_repo):
+            if os.path.getsize(alt_repo) < 10 * 1024 * 1024 and os.path.exists(alt_repo + ".bak"):
+                return alt_repo + ".bak"
             return alt_repo
         
-        # Автоматический поиск файла модели Saiga NeMo 12B BF16
-        for candidate_dir in [
+        # 2. Автоматический поиск файла модели Saiga NeMo 12B BF16 по стандартным путям
+        candidate_dirs = [
             "/opt/ucust/ai/models/saiga",
             "/opt/ucust/models/saiga",
             os.path.normpath(os.path.join(base_dir, "..", "models", "saiga")),
             os.path.normpath(os.path.join(base_dir, "..", "..", "ai", "models", "saiga")),
             "models/saiga"
-        ]:
+        ]
+        for candidate_dir in candidate_dirs:
             if os.path.exists(candidate_dir):
-                # 1. Приоритет: точное имя saiga_nemo_12b.BF16.gguf
+                # 2.1 Приоритет: saiga_nemo_12b.BF16.gguf или .bak
                 exact = os.path.join(candidate_dir, "saiga_nemo_12b.BF16.gguf")
-                if os.path.exists(exact):
-                    print(f"[SaigaSkill] 🔍 Обнаружен официальный файл Saiga NeMo 12B BF16: {exact}")
+                exact_bak = os.path.join(candidate_dir, "saiga_nemo_12b.BF16.gguf.bak")
+                if os.path.exists(exact) and os.path.getsize(exact) > 100 * 1024 * 1024:
+                    print(f"[SaigaSkill] 🔍 Обнаружен полноценный файл Saiga NeMo 12B BF16: {exact}")
                     return exact
-                # 2. Поиск любого NeMo GGUF
+                if os.path.exists(exact_bak) and os.path.getsize(exact_bak) > 100 * 1024 * 1024:
+                    print(f"[SaigaSkill] 🔍 Обнаружена полная резервная копия Saiga NeMo 12B BF16 (.bak): {exact_bak}")
+                    return exact_bak
+                if os.path.exists(exact):
+                    return exact
+
+                # 2.2 Поиск любого NeMo GGUF / .bak
                 for fname in os.listdir(candidate_dir):
-                    if "nemo" in fname.lower() and fname.endswith(".gguf"):
+                    if "nemo" in fname.lower() and (fname.endswith(".gguf") or fname.endswith(".gguf.bak")):
                         found = os.path.join(candidate_dir, fname)
-                        print(f"[SaigaSkill] 🔍 Автоматически обнаружен файл Saiga NeMo 12B: {found}")
-                        return found
-                # 3. Любой Saiga GGUF
+                        if os.path.getsize(found) > 100 * 1024 * 1024:
+                            print(f"[SaigaSkill] 🔍 Автоматически обнаружен файл Saiga NeMo 12B: {found}")
+                            return found
+
+                # 2.3 Любой Saiga GGUF
                 for fname in os.listdir(candidate_dir):
-                    if fname.endswith(".gguf"):
+                    if fname.endswith(".gguf") or fname.endswith(".gguf.bak"):
                         found = os.path.join(candidate_dir, fname)
-                        print(f"[SaigaSkill] 🔍 Автоматически обнаружен файл модели: {found}")
-                        return found
+                        if os.path.getsize(found) > 100 * 1024 * 1024:
+                            print(f"[SaigaSkill] 🔍 Автоматически обнаружен файл модели: {found}")
+                            return found
         return path_str
 
     def _init_prompt(self):

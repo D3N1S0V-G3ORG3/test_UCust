@@ -41,6 +41,7 @@ except ImportError:
 DEFAULT_DB_URL = "postgresql+asyncpg://user:password@localhost:5432/ai_smm"
 DATABASE_URL = os.getenv("DATABASE_URL", DEFAULT_DB_URL)
 
+logger = logging.getLogger("storage.db")
 _db_engine = None
 
 
@@ -123,6 +124,28 @@ async def init_db(engine: Any = None) -> None:
     def sync_init():
         sync_eng = target_engine.sync_engine if isinstance(target_engine, AsyncEngine) else target_engine
         Base.metadata.create_all(bind=sync_eng)
+        # Автоматическая миграция недостающих колонок для SQLite/PostgreSQL
+        try:
+            from sqlalchemy import inspect, text
+            inspector = inspect(sync_eng)
+            if "user_profiles" in inspector.get_table_names():
+                cols = {c["name"] for c in inspector.get_columns("user_profiles")}
+                with sync_eng.connect() as conn:
+                    if "company_name" not in cols:
+                        conn.execute(text("ALTER TABLE user_profiles ADD COLUMN company_name VARCHAR(256)"))
+                        conn.commit()
+                        logger.info("Auto-migrated schema: added 'company_name' to user_profiles")
+                    if "social_links" not in cols:
+                        conn.execute(text("ALTER TABLE user_profiles ADD COLUMN social_links JSON"))
+                        conn.commit()
+                    if "visual_grid_dna" not in cols:
+                        conn.execute(text("ALTER TABLE user_profiles ADD COLUMN visual_grid_dna JSON"))
+                        conn.commit()
+                    if "brand_dossier" not in cols:
+                        conn.execute(text("ALTER TABLE user_profiles ADD COLUMN brand_dossier JSON"))
+                        conn.commit()
+        except Exception as mig_err:
+            logger.debug("Schema inspection/migration notice: %s", mig_err)
 
     await asyncio.to_thread(sync_init)
     logger.info("Database tables initialized successfully via init_db().")
