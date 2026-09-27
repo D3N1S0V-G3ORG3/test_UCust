@@ -199,8 +199,11 @@ class BM25SparseRetriever:
 
 class HybridRetriever:
     """
-    Гибридный поисковый движок с поддержкой Multi-Tenant изоляции и инвалидации кэша:
+    Гибридный поисковый движок с поддержкой Multi-Tenant изоляции и потокобезопасного кэша.
     Объединяет Dense (Векторный) и Sparse (BM25) результаты через Reciprocal Rank Fusion (RRF).
+
+    Директива 7: все операции записи/удаления _query_cache защищены asyncio.Lock
+    для предотвращения Race Condition при параллельных asyncio-тасках (50+ тенантов).
     """
     def __init__(self, rrf_k: int = 60, dense_weight: float = 0.6, sparse_weight: float = 0.4):
         self.dense_store = LocalDenseStore()
@@ -209,63 +212,165 @@ class HybridRetriever:
         self.dense_weight = dense_weight
         self.sparse_weight = sparse_weight
         self._query_cache: Dict[str, List[RetrievalResult]] = {}
+        # Директива 7: единый asyncio.Lock для атомарных операций над кэшем
+        self._cache_lock: Optional[Any] = None  # Lazy-init для совместимости с sync-контекстом
+
+    def _get_cache_lock(self):
+        """Lazy-инициализация Lock в рамках текущего event loop."""
+        import asyncio
+        if self._cache_lock is None:
+            try:
+                self._cache_lock = asyncio.Lock()
+            except RuntimeError:
+                # Нет активного event loop (sync-контекст) — Lock не нужен
+                pass
+        return self._cache_lock
 
     def index_chunks(self, chunks: List[Chunk]):
+        """Индексирование чанков с синхронной инвалидацией кэша затронутых тенантов."""
         self.dense_store.add_chunks(chunks)
         self.sparse_retriever.add_chunks(chunks)
-        # Инвалидация кэша для затронутых tenant_id (Edge Case 3)
+        # Инвалидация кэша для затронутых tenant_id (Edge Case 3, Директива 4)
         affected_tenants = {
             (c.metadata.get("tenant_id") or c.metadata.get("company_name", "")).strip().lower().replace(" ", "_")
             for c in chunks if c.metadata
         }
         for tid in affected_tenants:
             if tid:
-                self.invalidate_cache(tid)
+                self._invalidate_cache_sync(tid)
             else:
                 self._query_cache.clear()
 
-    def invalidate_cache(self, tenant_id: Optional[str] = None):
-        """Инвалидация кэша поисковых запросов по tenant_id или глобально."""
+    async def index_chunks_async(self, chunks: List[Chunk]):
+        """Асинхронная версия индексирования с Lock-защищённой инвалидацией."""
+        self.dense_store.add_chunks(chunks)
+        self.sparse_retriever.add_chunks(chunks)
+        affected_tenants = {
+            (c.metadata.get("tenant_id") or c.metadata.get("company_name", "")).strip().lower().replace(" ", "_")
+            for c in chunks if c.metadata
+        }
+        for tid in affected_tenants:
+            if tid:
+                await self.invalidate_cache_async(tid)
+            else:
+                async with self._get_or_create_lock():
+                    self._query_cache.clear()
+
+    def _invalidate_cache_sync(self, tenant_id: Optional[str] = None):
+        """
+        Синхронная инвалидация — только для вызовов вне asyncio event loop.
+        Использует list() snapshot для безопасной итерации при concurrent dict modifications.
+        """
         if not tenant_id:
             self._query_cache.clear()
             return
-
         tid = tenant_id.strip().lower()
-        keys_to_delete = [k for k in self._query_cache if k.startswith(f"{tid}:")]
+        # list() snapshot предотвращает RuntimeError: dictionary changed size during iteration
+        keys_to_delete = [k for k in list(self._query_cache.keys()) if k.startswith(f"{tid}:")]
         for k in keys_to_delete:
-            del self._query_cache[k]
+            self._query_cache.pop(k, None)
+
+    def invalidate_cache(self, tenant_id: Optional[str] = None):
+        """Sync-совместимая инвалидация (для обратной совместимости с sync-кодом)."""
+        self._invalidate_cache_sync(tenant_id)
+
+    async def invalidate_cache_async(self, tenant_id: Optional[str] = None):
+        """
+        Директива 7: Потокобезопасная асинхронная инвалидация под asyncio.Lock.
+        Исключает KeyError и состояния гонки при параллельных записях от 50+ тенантов.
+        """
+        lock = self._get_or_create_lock()
+        async with lock:
+            if not tenant_id:
+                self._query_cache.clear()
+                return
+            tid = tenant_id.strip().lower()
+            keys_to_delete = [k for k in self._query_cache if k.startswith(f"{tid}:")]
+            for k in keys_to_delete:
+                self._query_cache.pop(k, None)
+
+    def _get_or_create_lock(self):
+        """Потокобезопасное создание Lock в рамках текущего event loop."""
+        import asyncio
+        if self._cache_lock is None:
+            self._cache_lock = asyncio.Lock()
+        return self._cache_lock
 
     def delete_tenant(self, tenant_id: str):
-        """Удаление данных тенанта и сброс его кэша."""
+        """Синхронное удаление данных тенанта и сброс его кэша."""
         self.dense_store.delete_by_tenant(tenant_id)
         self.sparse_retriever.delete_by_tenant(tenant_id)
-        self.invalidate_cache(tenant_id)
+        self._invalidate_cache_sync(tenant_id)
+
+    async def delete_tenant_async(self, tenant_id: str):
+        """Директива 7: Асинхронное удаление тенанта с Lock-защитой кэша."""
+        self.dense_store.delete_by_tenant(tenant_id)
+        self.sparse_retriever.delete_by_tenant(tenant_id)
+        await self.invalidate_cache_async(tenant_id)
 
     def hybrid_search(self, query: str, top_k: int = 10, tenant_id: Optional[str] = None) -> List[RetrievalResult]:
+        """Синхронный поиск с read-only обращением к кэшу (без Lock — read-only безопасен)."""
         cache_key = f"{tenant_id.strip().lower() if tenant_id else 'global'}:{query.strip().lower()}:{top_k}"
         if cache_key in self._query_cache:
             return self._query_cache[cache_key]
 
+        final_results = self._compute_hybrid_search(query, top_k, tenant_id)
+        # Запись в кэш (sync-контекст): простой dict — атомарно на GIL уровне
+        self._query_cache[cache_key] = final_results
+        return final_results
+
+    async def hybrid_search_async(self, query: str, top_k: int = 10, tenant_id: Optional[str] = None) -> List[RetrievalResult]:
+        """
+        Директива 7: Асинхронный поиск с Lock-защищённой записью в кэш.
+        - Cache lookup/write: в event loop (GIL-атомарны, O(1))
+        - CPU-bound compute: в ThreadPoolExecutor (не блокирует event loop)
+        Использовать вместо hybrid_search() при работе в asyncio-окружении с 50+ concurrent users.
+        """
+        import asyncio
+        cache_key = f"{tenant_id.strip().lower() if tenant_id else 'global'}:{query.strip().lower()}:{top_k}"
+
+        # Чтение без Lock — dict.get() атомарен в CPython (GIL), O(1)
+        cached = self._query_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        # CPU-bound вычисление → executor, не блокирует event loop
+        loop = asyncio.get_running_loop()
+        final_results = await loop.run_in_executor(
+            None, self._compute_hybrid_search, query, top_k, tenant_id
+        )
+
+        # Директива 7: Lock только при записи — предотвращает dirty-write race condition
+        lock = self._get_or_create_lock()
+        async with lock:
+            # Double-checked locking: другая таска могла уже записать пока мы считали
+            if cache_key not in self._query_cache:
+                self._query_cache[cache_key] = final_results
+
+        return self._query_cache.get(cache_key, final_results)
+
+    def _compute_hybrid_search(self, query: str, top_k: int, tenant_id: Optional[str]) -> List[RetrievalResult]:
+        """Вычисление RRF-комбинации Dense + Sparse результатов (без кэширования)."""
         dense_results = self.dense_store.search(query, top_k=top_k * 2, tenant_id=tenant_id)
         sparse_results = self.sparse_retriever.search(query, top_k=top_k * 2, tenant_id=tenant_id)
-        
+
         chunk_map: Dict[str, Chunk] = {}
         dense_scores: Dict[str, float] = {}
         sparse_scores: Dict[str, float] = {}
         rrf_scores: Dict[str, float] = {}
-        
+
         for rank, (chunk, score) in enumerate(dense_results):
             cid = chunk.chunk_id
             chunk_map[cid] = chunk
             dense_scores[cid] = score
             rrf_scores[cid] = rrf_scores.get(cid, 0.0) + self.dense_weight * (1.0 / (self.rrf_k + rank + 1))
-            
+
         for rank, (chunk, score) in enumerate(sparse_results):
             cid = chunk.chunk_id
             chunk_map[cid] = chunk
             sparse_scores[cid] = score
             rrf_scores[cid] = rrf_scores.get(cid, 0.0) + self.sparse_weight * (1.0 / (self.rrf_k + rank + 1))
-            
+
         combined: List[RetrievalResult] = []
         for cid, chunk in chunk_map.items():
             combined.append(
@@ -276,8 +381,7 @@ class HybridRetriever:
                     hybrid_score=rrf_scores.get(cid, 0.0)
                 )
             )
-            
+
         combined.sort(key=lambda x: x.hybrid_score, reverse=True)
-        final_results = combined[:top_k]
-        self._query_cache[cache_key] = final_results
-        return final_results
+        return combined[:top_k]
+
