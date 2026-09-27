@@ -1475,3 +1475,80 @@ curl -X POST "http://localhost:8000/api/v1/ai/achievements/post" \
   "data": { "message_id": 9812, "channel": "@UcustAi", "status": "sent" }
 }
 ```
+
+---
+
+### 9.12. Интерактивные Опросы и Викторины (Telegram & VK Polls)
+
+#### `POST /api/v1/content/poll/generate` (Алиас: `/api/v1/ai/poll/generate`)
+* **Назначение:** Генерация интерактивных опросов и квизов с привязкой к этапам маркетинговой воронки (TOFU — вовлечение, MOFU — выявление болей/квалификация, BOFU — выбор спецпредложения, Quiz — викторина с правильным ответом и пояснением).
+* **cURL:**
+```bash
+curl -X POST "http://localhost:8000/api/v1/content/poll/generate" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "topic": "Идеальное утреннее заваривание",
+    "niche": "Кофейня",
+    "company_name": "Surf Coffee",
+    "goal": "engagement",
+    "is_quiz": false,
+    "options_count": 4,
+    "is_anonymous": false
+  }'
+```
+* **Пример ответа (`200 OK`):**
+```json
+{
+  "status": "success",
+  "poll": {
+    "id": "poll_9182a0b1",
+    "topic": "Идеальное утреннее заваривание",
+    "question": "☕ С чего начинается ваше идеальное утро?",
+    "options": [
+      "Плотный фильтр-кофе или американо",
+      "Нежный капучино / латте с пенкой",
+      "Освежающий флэт уайт на альтернативном молоке",
+      "Матча / зеленый чай для мягкой бодрости"
+    ],
+    "poll_type": "regular",
+    "is_anonymous": false,
+    "allows_multiple_answers": false,
+    "funnel_stage": "TOFU",
+    "niche": "Кофейня",
+    "company_name": "Surf Coffee",
+    "accompanying_text": "В Surf Coffee уверены: правильное утро задает тон всему дню! Давайте сверим вкусы нашей кофейной семьи.",
+    "suggested_call_to_action": "Голосуйте и делитесь в комментариях, почему выбрали именно этот вариант!"
+  }
+}
+```
+
+#### `POST /api/v1/publishers/poll` (Алиас: `/api/v1/ai/poll/publish`)
+* **Назначение:** Прямая публикация нативного интерактивного опроса или викторины в Telegram (через Bot API `sendPoll`) или на стену ВКонтакте (через `polls.create` + `wall.post`).
+* **cURL:**
+```bash
+curl -X POST "http://localhost:8000/api/v1/publishers/poll" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "platform": "telegram",
+    "channel": "@UcustAi",
+    "question": "🧠 Какой HTTP-код означает, что запрос принят в асинхронную обработку?",
+    "options": ["200 OK", "202 Accepted", "204 No Content", "304 Not Modified"],
+    "poll_type": "quiz",
+    "correct_option_id": 1,
+    "explanation": "HTTP 202 Accepted указывает, что задача принята в очередь (Celery), а результат будет готов позже."
+  }'
+```
+* **Пример ответа (`200 OK`):**
+```json
+{
+  "status": "success",
+  "platform": "telegram",
+  "data": {
+    "status": "success",
+    "message_id": 9991,
+    "poll_id": "poll_demo_8a71bc9",
+    "channel": "@UcustAi"
+  }
+}
+```
+

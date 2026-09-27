@@ -289,9 +289,32 @@ class AsyncGenerateTaskRequest(BaseModel):
     project_context: Optional[ProjectContext] = Field(None, description="Полный контекст проекта (алиас)")
 
 
+class PollGenerateAPIRequest(BaseModel):
+    topic: str = Field(..., description="Тема опроса или инфоповод")
+    niche: Optional[str] = Field("Бизнес", description="Ниша / сфера деятельности")
+    company_name: Optional[str] = Field("", description="Название компании / бренда")
+    goal: Optional[str] = Field("engagement", description="engagement (TOFU) | qualification (MOFU) | decision (BOFU) | knowledge_check (Quiz)")
+    is_quiz: Optional[bool] = Field(False, description="Сгенерировать викторину с правильным ответом")
+    options_count: Optional[int] = Field(4, ge=2, le=10, description="Желаемое количество вариантов")
+    is_anonymous: Optional[bool] = Field(False, description="Анонимный опрос")
+    allows_multiple_answers: Optional[bool] = Field(False, description="Разрешить выбор нескольких вариантов")
+
+
+class PollPublishAPIRequest(BaseModel):
+    platform: Optional[str] = Field("telegram", description="telegram | vk")
+    channel: Optional[str] = Field("@UcustAi", description="Telegram username (@channel) или ID группы VK")
+    question: str = Field(..., max_length=255, description="Вопрос опроса")
+    options: List[str] = Field(..., min_items=2, max_items=10, description="Варианты ответов")
+    poll_type: Optional[str] = Field("regular", description="regular | quiz")
+    is_anonymous: Optional[bool] = Field(False, description="Анонимный опрос")
+    allows_multiple_answers: Optional[bool] = Field(False, description="Множественный выбор")
+    correct_option_id: Optional[int] = Field(None, description="Индекс правильного ответа (для викторин)")
+    explanation: Optional[str] = Field(None, description="Пояснение для викторин")
+    accompanying_text: Optional[str] = Field("", description="Текст поста / подводки")
 
 
 # -------------------------------------------------------------------
+
 # 2. Инициализация FastAPI приложения
 # -------------------------------------------------------------------
 
@@ -932,6 +955,79 @@ async def evaluate_ideas_placement(request: EvaluatePlacementAPIRequest):
 
 
 # ============================================================================
+# ИНТЕРАКТИВНЫЕ ОПРОСЫ И ВИКТОРИНЫ (INTERACTIVE POLLS & QUIZZES)
+# ============================================================================
+
+@app.post("/api/v1/content/poll/generate", tags=["Interactive Polls & Social Quizzes"])
+@app.post("/api/v1/ai/poll/generate", tags=["Interactive Polls & Social Quizzes"])
+async def generate_interactive_poll(request: PollGenerateAPIRequest):
+    """
+    📊 ГЕНЕРАЦИЯ ИНТЕРАКТИВНЫХ ОПРОСОВ И КВИЗОВ ДЛЯ СОЦСЕТЕЙ (Telegram / VK):
+    - Поддерживает 4 типа: вовлекающие (TOFU), выявление болей (MOFU), выбор продукта (BOFU) и викторины с проверкой знаний (Quiz).
+    - Возвращает структурированный вопрос, до 10 вариантов ответа, подводку к посту и правильный ответ с объяснением.
+    """
+    from skills.poll_generator import PollGeneratorSkill
+    poll_gen = PollGeneratorSkill()
+    poll = poll_gen.generate_poll(
+        topic=request.topic,
+        niche=request.niche or "Бизнес",
+        company_name=request.company_name or "UCust",
+        goal=request.goal or "engagement",
+        is_quiz=request.is_quiz or False,
+        options_count=request.options_count or 4,
+        is_anonymous=request.is_anonymous or False,
+        allows_multiple_answers=request.allows_multiple_answers or False
+    )
+    return {
+        "status": "success",
+        "poll": poll.dict()
+    }
+
+
+@app.post("/api/v1/publishers/poll", tags=["Interactive Polls & Social Quizzes", "Publishers"])
+@app.post("/api/v1/ai/poll/publish", tags=["Interactive Polls & Social Quizzes", "Publishers"])
+async def publish_interactive_poll(request: PollPublishAPIRequest):
+    """
+    🚀 ПУБЛИКАЦИЯ НАЦИОНАЛЬНОГО ОПРОСА В TELEGRAM ИЛИ VK:
+    - В Telegram: публикует через Bot API sendPoll или Telethon с поддержкой квизов и таймеров.
+    - В VK: создает опрос через polls.create и прикрепляет к посту на стене (wall.post).
+    """
+    if (request.platform or "telegram").lower() == "vk":
+        from publishers.vk import VkPublisher
+        vk_pub = VkPublisher(group_id=request.channel or "@UcustAi")
+        res = await vk_pub.publish_poll(
+            question=request.question,
+            options=request.options,
+            is_anonymous=request.is_anonymous or False,
+            allows_multiple_answers=request.allows_multiple_answers or False,
+            accompanying_text=request.accompanying_text or ""
+        )
+        return {
+            "status": "success",
+            "platform": "vk",
+            "data": res
+        }
+    else:
+        from publishers.telegram import TelegramPublisher
+        tg_pub = TelegramPublisher(target_channel=request.channel or "@UcustAi")
+        res = await tg_pub.publish_poll(
+            question=request.question,
+            options=request.options,
+            is_anonymous=request.is_anonymous or False,
+            allows_multiple_answers=request.allows_multiple_answers or False,
+            poll_type=request.poll_type or "regular",
+            correct_option_id=request.correct_option_id,
+            explanation=request.explanation
+        )
+        return {
+            "status": "success",
+            "platform": "telegram",
+            "data": res
+        }
+
+
+# ============================================================================
+
 # ДИАГНОСТИКА VRAM И АДАПТИВНОГО ПЛАНИРОВЩИКА GPU
 # ============================================================================
 

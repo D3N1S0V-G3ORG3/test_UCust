@@ -628,6 +628,81 @@ class UnifiedOrchestrator:
                 "verdict": verdict.dict()
             }
 
+        if task_type in {"generate_poll", "poll_generate", "create_poll", "quiz_generate"}:
+            from skills.poll_generator import PollGeneratorSkill
+            poll_gen = PollGeneratorSkill()
+            topic = user_data.get("topic") or user_data.get("prompt") or "Интерактивный опрос"
+            niche = user_data.get("niche") or "Бизнес"
+            company_name = user_data.get("company_name") or user_data.get("companyName") or "UCust"
+            goal = user_data.get("goal") or "engagement"
+            is_quiz = bool(user_data.get("is_quiz", False))
+            options_count = int(user_data.get("options_count", 4))
+            is_anonymous = bool(user_data.get("is_anonymous", False))
+            allows_multiple = bool(user_data.get("allows_multiple_answers", False))
+
+            poll = poll_gen.generate_poll(
+                topic=topic,
+                niche=niche,
+                company_name=company_name,
+                goal=goal,
+                is_quiz=is_quiz,
+                options_count=options_count,
+                is_anonymous=is_anonymous,
+                allows_multiple_answers=allows_multiple
+            )
+            return {
+                "status": "success",
+                "task_type": task_type,
+                "poll": poll.dict()
+            }
+
+        if task_type in {"publish_poll", "poll_publish"}:
+            channel = user_data.get("channel") or "@UcustAi"
+            platform = user_data.get("platform", "telegram").lower()
+            question = user_data.get("question", "")
+            options = user_data.get("options", [])
+            is_anonymous = bool(user_data.get("is_anonymous", False))
+            allows_multiple = bool(user_data.get("allows_multiple_answers", False))
+            poll_type_str = user_data.get("poll_type", "regular")
+            correct_option_id = user_data.get("correct_option_id")
+            explanation = user_data.get("explanation")
+            accompanying_text = user_data.get("accompanying_text", "")
+
+            if platform == "vk":
+                from publishers.vk import VkPublisher
+                vk_pub = VkPublisher(group_id=channel)
+                res = await vk_pub.publish_poll(
+                    question=question,
+                    options=options,
+                    is_anonymous=is_anonymous,
+                    allows_multiple_answers=allows_multiple,
+                    accompanying_text=accompanying_text
+                )
+                return {
+                    "status": "success",
+                    "task_type": task_type,
+                    "platform": "vk",
+                    "data": res
+                }
+            else:
+                from publishers.telegram import TelegramPublisher
+                tg_pub = TelegramPublisher(target_channel=channel)
+                res = await tg_pub.publish_poll(
+                    question=question,
+                    options=options,
+                    is_anonymous=is_anonymous,
+                    allows_multiple_answers=allows_multiple,
+                    poll_type=poll_type_str,
+                    correct_option_id=correct_option_id,
+                    explanation=explanation
+                )
+                return {
+                    "status": "success",
+                    "task_type": task_type,
+                    "platform": "telegram",
+                    "data": res
+                }
+
         if task_type in {"onboarding", "onboard_user", "analyze_brand", "interviewer"}:
             from skills.saiga_llm import SaigaLLMSkill
             from collectors.website_collector import WebsiteCollector
