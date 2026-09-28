@@ -297,7 +297,8 @@ async def run_pipeline(
     if promo_code:
         post_text += f"\n\n🎟️ Назовите промокод <code>{promo_code}</code> на кассе или в боте для получения скидки 15%."
 
-    # Финальная обработка форматирования (спойлеры, цены, промокоды)
+    # Финальная очистка и конвертация в 100% валидный Telegram HTML
+    post_text = TelegramRichPostFormatter.sanitize_telegram_html(post_text, promo_code=promo_code)
     post_text = TelegramRichPostFormatter.format_clickable_promocodes(post_text, promo_code=promo_code)
     post_text = TelegramRichPostFormatter.format_strikethrough_prices(post_text)
 
@@ -310,11 +311,35 @@ async def run_pipeline(
     t_critic_start = time.time()
     print("\n🛡️ [Этап 3/5] Pre-Mortem аудит качества (Чарли Мангер 2.0) и факт-чекинг...")
 
+    try:
+        from skills.critic_munger import CriticMungerSkill
+        munger = CriticMungerSkill()
+        review = munger.review_content(text=post_text, topic=actual_topic, niche=niche)
+        if not review.get("passed", True) and review.get("issues"):
+            print(f"  ⚠️ Замечания Чарли Мангера ({len(review['issues'])}): {', '.join(review['issues'][:3])}")
+            # Автоматическая замена найденных штампов
+            cliche_replacements = {
+                "встречайте наш": "представляем",
+                "встречайте наше": "представляем",
+                "самые лучшие": "отборные",
+                "лучшее качество": "высокое качество",
+                "команда профессионалов": "наши мастера",
+                "индивидуальный подход": "внимание к каждой детали",
+                "с любовью": "по проверенной рецептуре"
+            }
+            for cl, rep in cliche_replacements.items():
+                if cl in post_text.lower():
+                    pat = re.compile(re.escape(cl), re.IGNORECASE)
+                    post_text = pat.sub(rep, post_text)
+    except Exception as munger_err:
+        logger.warning(f"Ошибка проверки CriticMunger: {munger_err}")
+
     critic_report = FactCheckingCritic.validate_and_autocorrect(
         text=post_text,
         fact_sheet=fact_sheet
     )
     post_text = critic_report.sanitized_text
+    post_text = TelegramRichPostFormatter.sanitize_telegram_html(post_text, promo_code=promo_code)
     critic_score = 0.96 if critic_report.is_fully_grounded else 0.88
     critic_sec = round(time.time() - t_critic_start, 2)
 

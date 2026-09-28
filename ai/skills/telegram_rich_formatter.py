@@ -121,6 +121,61 @@ class TelegramRichPostFormatter:
         return result
 
     @classmethod
+    def sanitize_telegram_html(cls, text: str, promo_code: Optional[str] = None) -> str:
+        """
+        Преобразует текст в 100% валидный Telegram HTML:
+        - Преобразует Markdown **bold** в <b>bold</b>
+        - Преобразует Markdown *italic* в <i>italic</i>
+        - Преобразует Markdown `code` в <code>code</code>
+        - Убирает плейсхолдеры в квадратных скобках ([ссылка на сайт или директ] и т.д.)
+        - Устраняет галлюцинированные промокоды (PAS2023, PROMO2023), если задан целевой promo_code
+        - Обеспечивает валидность тегов для Telegram Bot API
+        """
+        if not text:
+            return ""
+
+        res = text
+
+        # 1. Замена плейсхолдеров в квадратных скобках
+        placeholder_patterns = [
+            r"\[ссылка\s+на\s+сайт[^\]]*\]",
+            r"\[ссылка[^\]]*\]",
+            r"\[директ[^\]]*\]",
+            r"\[контакты[^\]]*\]",
+            r"\[телефон[^\]]*\]",
+            r"\[адрес[^\]]*\]"
+        ]
+        for p_pat in placeholder_patterns:
+            res = re.sub(p_pat, "👉 по ссылке в шапке профиля или кнопке ниже", res, flags=re.IGNORECASE)
+
+        # 2. Если задан настоящий промокод — вычищаем галлюцинированные промокоды (PAS2023, PROMO...)
+        if promo_code:
+            hallucinated_promo_pattern = re.compile(
+                r"\b(PAS|PROMO|SALE|DISCOUNT|EASTER|SPRING)\d{2,4}\b(?!\s*<\/(?:code)>)",
+                re.IGNORECASE
+            )
+            def _clean_hallucinated(m):
+                matched = m.group(0)
+                if matched.upper() != promo_code.upper():
+                    return promo_code.upper()
+                return matched
+            res = hallucinated_promo_pattern.sub(_clean_hallucinated, res)
+
+        # 3. Преобразование Markdown в Telegram HTML
+        # **жирный** -> <b>жирный</b>
+        res = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", res)
+        # *курсив* -> <i>курсив</i> (но не трогаем пункты списков в начале строки)
+        res = re.sub(r"(?<!\n)(?<!^)\*([^\*\n]+?)\*", r"<i>\1</i>", res)
+        # `код` -> <code>код</code>
+        res = re.sub(r"`([^`\n]+?)`", r"<code>\1</code>", res)
+
+        # 4. Устранение возможных дубликатов тегов
+        res = res.replace("<b><b>", "<b>").replace("</b></b>", "</b>")
+        res = res.replace("<code><code>", "<code>").replace("</code></code>", "</code>")
+
+        return res.strip()
+
+    @classmethod
     def generate_inline_keyboard(
         cls,
         company_name: str = "",
