@@ -157,9 +157,26 @@ class AutonomousResearchGrounder:
             logger.info(f"FactSheet найден в кэше для: {clean_name}")
             return FactSheet.model_validate_json(cached_data)
 
-        # 2. Асинхронный сбор данных из сети (Search Fallback)
+        # 2. Асинхронный сбор данных из сети (Search Fallback с поддержкой Geo Dork)
         logger.info(f"Кэш пуст. Запуск веб-поиска для: {clean_name}")
-        search_query = f"{clean_name} {niche} характеристики официальный спецификация".strip()
+        
+        # Интеллектуальный Dork-запрос с защитой от перегрузки операторов
+        try:
+            from skills.geo_entity_resolver import GeoEntityResolver, MarketRegion
+        except ImportError:
+            try:
+                from ai.skills.geo_entity_resolver import GeoEntityResolver, MarketRegion
+            except ImportError:
+                GeoEntityResolver = None
+                MarketRegion = None
+
+        is_beauty = any(w in f"{niche} {clean_name}".lower() for w in ["бьюти", "красота", "салон", "волос", "лак", "шампун", "крем", "косметик", "beauty", "hair", "taft", "тафт"])
+        
+        if GeoEntityResolver and is_beauty:
+            search_query = GeoEntityResolver.build_clean_dork_query(clean_name, region=MarketRegion.RU if MarketRegion else "ru")
+            logger.info(f"🎯 [GeoEntityResolver] Сформирован чистый PIM Dork: {search_query}")
+        else:
+            search_query = f"{clean_name} {niche} характеристики официальный спецификация".strip()
         
         search_results = []
         if self.search:
