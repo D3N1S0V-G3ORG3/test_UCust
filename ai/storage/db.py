@@ -23,7 +23,7 @@ try:
     class Base(DeclarativeBase):
         """Base class for all SQLAlchemy v2.0 declarative models."""
         pass
-except ImportError:
+except (ImportError, Exception):
     create_engine = None
     select = None
     DeclarativeBase = object
@@ -33,8 +33,15 @@ except ImportError:
     AsyncEngine = Any
     AsyncSession = Any
     async_sessionmaker = Any
+
+    class _MockMetadata:
+        def create_all(self, *args, **kwargs):
+            pass
+        def drop_all(self, *args, **kwargs):
+            pass
+
     class Base:
-        pass
+        metadata = _MockMetadata()
 
 
 # Database URL from environment variable

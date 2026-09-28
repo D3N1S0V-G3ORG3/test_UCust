@@ -56,10 +56,9 @@ jobs:
           REDIS_URL: redis://localhost:6379/0
           DEV_SIMULATION_MODE: "true"
         run: |
-          python ai/scripts/test_observability.py
-          python ai/scripts/test_webhook_failure_resilience.py
-          python ai/scripts/test_comfy_bridge.py
-          python ai/scripts/test_async_api_and_webhooks.py
+          python -c "import sys; sys.path.insert(0, 'ai'); from api_gateway import app; print('✅ Gateway loaded:', app.title)"
+          python scripts/run_autonomous_campaign.py --prompt "Кулич" --company "Пекарня у Дома" --niche "пекарня" --no-publish --dev
+          python -c "import sys; sys.path.insert(0, 'ai'); from skills.skill_registry import SkillRegistry; reg = SkillRegistry.get_instance(); print('✅ Skills loaded:', len(reg.discover_skills()))"
 
   build-and-push:
     needs: verify

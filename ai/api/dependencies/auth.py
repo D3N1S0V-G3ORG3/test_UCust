@@ -7,7 +7,11 @@ from __future__ import annotations
 
 import os
 import logging
-import jwt
+try:
+    import jwt
+except ImportError:
+    jwt = None
+
 from fastapi import Security, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 

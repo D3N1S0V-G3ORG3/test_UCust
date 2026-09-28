@@ -14,8 +14,10 @@ import os
 import uuid
 import logging
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional, Tuple
-from PIL import Image
+try:
+    from PIL import Image
+except ImportError:
+    Image = None
 
 logger = logging.getLogger("InteractivePuzzleGenerator")
 

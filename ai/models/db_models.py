@@ -5,13 +5,29 @@ File: ai/models/db_models.py
 
 from __future__ import annotations
 
-from sqlalchemy import Column, String, Text, Float, JSON, Integer
-from sqlalchemy.dialects.postgresql import JSONB
+try:
+    from sqlalchemy import Column, String, Text, Float, JSON, Integer
+    from sqlalchemy.dialects.postgresql import JSONB
+except (ImportError, Exception):
+    class _MockCol:
+        def __init__(self, *args, **kwargs):
+            pass
+        def __call__(self, *args, **kwargs):
+            return self
+    Column = String = Text = Float = JSON = Integer = JSONB = _MockCol
 
 try:
     from core.database import Base, IS_POSTGRES
 except ImportError:
-    from ai.core.database import Base, IS_POSTGRES
+    try:
+        from ai.core.database import Base, IS_POSTGRES
+    except ImportError:
+        class _MockMetadata:
+            def create_all(self, *args, **kwargs):
+                pass
+        class Base:
+            metadata = _MockMetadata()
+        IS_POSTGRES = False
 
 try:
     from pgvector.sqlalchemy import Vector

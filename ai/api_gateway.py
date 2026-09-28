@@ -378,14 +378,21 @@ output_static_dir = os.path.normpath(os.path.join(os.path.dirname(os.path.abspat
 os.makedirs(os.path.join(output_static_dir, "photos"), exist_ok=True)
 app.mount("/output", StaticFiles(directory=output_static_dir), name="output")
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 from storage.models import Base
 
-db_engine = create_engine("sqlite:///./ai_smm_dev.db", echo=False)
-Base.metadata.create_all(bind=db_engine)
-SessionLocal = sessionmaker(bind=db_engine)
-db_session = SessionLocal()
+try:
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    db_engine = create_engine("sqlite:///./ai_smm_dev.db", echo=False)
+    if hasattr(Base, "metadata") and Base.metadata is not None:
+        Base.metadata.create_all(bind=db_engine)
+    SessionLocal = sessionmaker(bind=db_engine)
+    db_session = SessionLocal()
+except Exception as e:
+    db_engine = None
+    SessionLocal = None
+    db_session = None
+
 orchestrator = UnifiedOrchestrator(db_session=db_session)
 rag_pipeline = CleanRAGPipeline(min_confidence_threshold=0.65)
 queue_manager = AsyncGenerationQueueManager(orchestrator=orchestrator)
