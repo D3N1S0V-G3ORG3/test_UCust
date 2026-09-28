@@ -239,7 +239,7 @@ class InternalCalendarEngine:
             "date_ranges": [(4, 1, 5, 10)],  # Примерный диапазон Пасхи (апрель-май)
             "hero_tabletop": (
                 "a tall artisanal traditional Easter Kulich brioche bread baked in a pleated brown kraft paper baking capsule with subtle gold filigree details, crowned with thick glossy white meringue fondant glaze with slow-moving drips down the top edge of the paper wrapper, "
-                "artfully garnished strictly on the snowy white glaze with delicate tiny multi-colored pastel nonpareil sugar pearl sprinkles and finely minced micro-crushed roasted pistachio dust (natural matte olive tone, no large chunks), "
+                "artfully garnished strictly on the snowy white glaze with delicate tiny multi-colored pastel round nonpareil sugar pearls and subtle micro-flecks of edible gold leaf (clean traditional Easter sugar sprinkles evenly scattered, no nuts, no fruit pieces), "
                 "standing elegantly on a minimalist white ceramic pedestal cake stand, beside a small handcrafted ceramic bowl filled with vibrantly dyed solid terracotta, deep ruby-amber, and sage-green matte Easter eggs on an organic linen runner, "
                 "accompanied by a small ceramic vase with fresh fluffy pussy willow branches in soft background"
             ),

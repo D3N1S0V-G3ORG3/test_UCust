@@ -139,7 +139,7 @@ class VisualKnowledgeResearcher:
         },
         "кулич": {
             "en_term": "traditional tall artisanal Easter Kulich in pleated panettone paper mold with dripping white glaze",
-            "visual_description": "tall cylindrical golden-brown artisanal Easter Kulich brioche cake baked in a decorative pleated brown parchment paper Panettone baking mold with subtle gold filigree patterns, crowned with a thick snowy-white royal sugar glaze dripping naturally down the domed crust, delicately garnished strictly on top with fine multi-colored pastel nonpareil sugar pearls, finely minced roasted pistachio dust, and subtle micro-flecks of edible gold leaf, warm festive daylight",
+            "visual_description": "tall cylindrical golden-brown artisanal Easter Kulich brioche cake baked in a decorative pleated brown parchment paper Panettone baking mold with subtle gold filigree patterns, crowned with a thick snowy-white royal sugar glaze dripping naturally down the domed crust, delicately garnished strictly on top with fine multi-colored pastel round nonpareil sugar pearls and subtle micro-flecks of edible gold leaf (clean traditional Easter sugar sprinkles evenly scattered, no nuts), warm festive daylight",
             "text_story": "пышный сдобный пасхальный кулич в рифленой форме для панеттоне: волокнистый золотистый мякиш с вымоченным в роме изюмом, плотная белоснежная глазурь с аппетитными подтеками и авторский весенний декор"
         },
         "пасх": {
