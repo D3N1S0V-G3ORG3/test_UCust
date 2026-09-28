@@ -137,7 +137,7 @@ async def proxy_octopoda_api(path: str, request: Request) -> StreamingResponse:
     )
 
 
-@app.get("/{path:path}", response_class=HTMLResponse)
+@app.get("/{path:path}", response_class=HTMLResponse, response_model=None)
 async def dashboard(path: str) -> HTMLResponse | FileResponse:
     """Serve the React SPA and its static assets."""
     if path:

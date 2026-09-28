@@ -148,10 +148,46 @@ class ContentGenerationEngine:
         )
         post_text = critic_report.sanitized_text
 
-        # 5. Сборка спецификации для отложенного ComfyUI рендера (Lazy Rendering)
+        # 5. Двухфакторная матрица эстетики (Tenant Aesthetic ∩ Product Color) и классификация ShotIntent
+        topic_lower = actual_topic.lower()
+        tenant_aesthetic = (profile.get("aesthetic") or about.get("style") or "scandi_eco").lower()
+        
+        # Определение композиционного намерения кадра (ShotIntent)
+        if any(w in topic_lower for w in ["в руках", "держит", "мастер наносит", "рука", "руки", "пальцы", "holding", "in hands"]):
+            shot_intent = ShotIntent.IN_HANDS
+        elif any(w in topic_lower for w in ["клиент", "модель", "девушка", "укладка", "прическа", "в кресле", "процесс"]):
+            shot_intent = ShotIntent.LIFESTYLE_MODEL
+        elif any(w in topic_lower for w in ["pov", "от первого лица", "вид от первого"]):
+            shot_intent = ShotIntent.POV_USER
+        else:
+            shot_intent = ShotIntent.PRODUCT_ONLY
+
+        # Двухфакторная палитра окружения
+        color_marker = getattr(fact_sheet, "color_marker", "") if fact_sheet else ""
+        if "loft" in tenant_aesthetic or "барбер" in niche.lower() or "dark" in tenant_aesthetic:
+            surf_desc = "dark matte polished concrete or blackened industrial steel table"
+            env_desc = "moody brutalist loft salon interior, exposed brick, dark slate surfaces"
+            light_desc = "dramatic directional rim lighting with cool 4500K key light and deep atmospheric room shadows"
+        elif "glam" in tenant_aesthetic or "luxury" in tenant_aesthetic or "премиум" in niche.lower():
+            surf_desc = "white polished Calacatta marble countertop with subtle gold brass trim"
+            env_desc = "luxurious modern beauty atelier, warm circular mirror glow, golden reflections"
+            light_desc = "warm focused spotlight 3200K, soft ambient fill, elegant specular highlights"
+        else:  # Default: scandi_eco / modern minimal
+            surf_desc = "minimalist light Scandinavian oak vanity surface"
+            env_desc = "airy sunlit modern salon interior with soft round mirrors and fresh botanical greenery in creamy bokeh"
+            light_desc = "natural diffused morning window daylight 5000K, clean organic contact shadows"
+
+        if shot_intent == ShotIntent.IN_HANDS:
+            subject_action = f"female hairstylist hands in clean professional manicure holding the {actual_topic[:40]}"
+        elif shot_intent == ShotIntent.LIFESTYLE_MODEL:
+            subject_action = f"satisfied beauty salon client with styled glossy hair, {actual_topic[:40]} sitting on vanity"
+        else:
+            subject_action = f"commercial tabletop product shot of {actual_topic[:40]}"
+
         visual_prompt = (
-            f"cinematic commercial shot, {niche}, {actual_topic[:60]}, authentic textures, "
-            f"soft directional daylight, Kodak Portra 400 aesthetic, shallow depth of field, 8k resolution"
+            f"A commercial photograph of {subject_action}, resting on {surf_desc}. "
+            f"Set in {env_desc}. Illuminated by {light_desc}. "
+            f"Shot on 85mm f/1.8 prime lens, shallow depth of field, tactile micro-textures, authentic reflections, zero CGI."
         )
 
         dim_map = {
@@ -166,7 +202,9 @@ class ContentGenerationEngine:
             prompt=visual_prompt,
             aspect_ratio=aspect_ratio,
             width=w,
-            height=h
+            height=h,
+            shot_intent=shot_intent,
+            use_controlnet=False
         )
 
         # 6. Формирование PostDraft в статусе DRAFT_TEXT

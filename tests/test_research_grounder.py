@@ -55,45 +55,56 @@ def grounder():
 
 # --- Тесты ---
 
-@pytest.mark.asyncio
-async def test_successful_fact_extraction(grounder):
+def test_successful_fact_extraction(grounder):
     """Тест: успешное извлечение фактов сложного продукта и отделение маркетинга"""
-    product = "Колумбия Ла Пальма"
-    
-    fact_sheet = await grounder.extract_facts(product)
-    
-    assert isinstance(fact_sheet, FactSheet)
-    assert fact_sheet.product_name == product
-    assert fact_sheet.is_verified is True
-    # Проверка отделения сухих цифр от эпитетов
-    assert "Оценка SCA: 88.5" in fact_sheet.key_specs
-    assert any("взрыв вкуса" in claim for claim in fact_sheet.unverified_claims)
-    assert fact_sheet.sources == ["https://coffee.ru/lapalma"]
+    async def _run():
+        product = "Колумбия Ла Пальма"
+        fact_sheet = await grounder.extract_facts(product)
+        
+        assert isinstance(fact_sheet, FactSheet)
+        assert fact_sheet.product_name == product
+        assert fact_sheet.is_verified is True
+        # Проверка отделения сухих цифр от эпитетов
+        assert "Оценка SCA: 88.5" in fact_sheet.key_specs
+        assert any("взрыв вкуса" in claim for claim in fact_sheet.unverified_claims)
+        assert fact_sheet.sources == ["https://coffee.ru/lapalma"]
 
-@pytest.mark.asyncio
-async def test_cache_hit_prevents_api_calls(grounder):
+    import asyncio
+    asyncio.run(_run())
+
+
+def test_cache_hit_prevents_api_calls(grounder):
     """Тест: повторный вызов берет данные из Redis, минуя Search и LLM"""
-    product = "Колумбия Ла Пальма"
-    
-    # Первый вызов (запись в кэш)
-    await grounder.extract_facts(product)
-    
-    # Искусственно ломаем моки, чтобы убедиться, что они не вызываются
-    grounder.search = None
-    grounder.llm = None
-    
-    # Второй вызов (чтение из кэша)
-    cached_sheet = await grounder.extract_facts(product)
-    
-    assert cached_sheet.product_name == product
-    assert cached_sheet.is_verified is True
+    async def _run():
+        product = "Колумбия Ла Пальма"
+        
+        # Первый вызов (запись в кэш)
+        await grounder.extract_facts(product)
+        
+        # Искусственно ломаем моки, чтобы убедиться, что они не вызываются
+        grounder.search = None
+        grounder.llm = None
+        
+        # Второй вызов (чтение из кэша)
+        cached_sheet = await grounder.extract_facts(product)
+        
+        assert cached_sheet.product_name == product
+        assert cached_sheet.is_verified is True
 
-@pytest.mark.asyncio
-async def test_empty_search_returns_unverified_factsheet(grounder):
+    import asyncio
+    asyncio.run(_run())
+
+
+def test_empty_search_returns_unverified_factsheet(grounder):
     """Тест: неизвестный продукт без выдачи корректно обрабатывается"""
-    product = "НесуществующийМикроконтроллер-X99"
-    
-    fact_sheet = await grounder.extract_facts(product)
-    
-    assert fact_sheet.is_verified is False
-    assert fact_sheet.key_specs == []
+    async def _run():
+        product = "НесуществующийМикроконтроллер-X99"
+        
+        fact_sheet = await grounder.extract_facts(product)
+        
+        assert fact_sheet.is_verified is False
+        assert fact_sheet.key_specs == []
+
+    import asyncio
+    asyncio.run(_run())
+

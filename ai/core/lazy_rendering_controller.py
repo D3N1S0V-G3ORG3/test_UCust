@@ -48,13 +48,23 @@ class PostLifecycleStatus(str, Enum):
     FAILED = "failed"                            # Фатальная ошибка генерации
 
 
+class ShotIntent(str, Enum):
+    PRODUCT_ONLY = "product_only"           # Чистый натюрморт на поверхности (LoRA RealSkinFix = Bypass 0.0)
+    IN_HANDS = "in_hands"                   # Руки мастера/стилиста держат флакон (LoRA RealSkinFix = 1.05)
+    LIFESTYLE_MODEL = "lifestyle_model"     # Модель / клиент в процессе укладки (LoRA RealSkinFix = 1.05)
+    POV_USER = "pov_user"                   # Вид от первого лица (рука с флаконом) (LoRA RealSkinFix = 1.05)
+
+
 class ImageGenerationSpec(BaseModel):
     prompt: str
     negative_prompt: str = "plastic, cheap, cluttered, cgi, 3d render, distorted anatomy, blurry, lowres, noise"
-    aspect_ratio: str = Field(default="1:1", description="1:1, 4:5, 16:9")
+    aspect_ratio: str = Field(default="1:1", description="1:1, 4:5, 16:9, 9:16")
     width: int = 1024
     height: int = 1024
     seed: Optional[int] = None
+    shot_intent: ShotIntent = Field(default=ShotIntent.PRODUCT_ONLY, description="Композиционное намерение кадра")
+    use_controlnet: bool = Field(default=False, description="Флаг активации ControlNet для точной геометрии этикетки")
+    reference_image_url: Optional[str] = Field(default=None, description="URL или путь к исходному фото продукта для ControlNet/IP-Adapter")
 
 
 class PostDraft(BaseModel):
