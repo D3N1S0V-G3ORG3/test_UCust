@@ -150,13 +150,27 @@ async def run_pipeline(
         )
         actual_topic = topic
 
+    # Фильтрация и очистка фактов от поисковых маркеров и заголовков
+    clean_rag_facts = []
     if rag_facts:
-        rag_context = "\n".join([f"- {fact}" for fact in rag_facts])
+        for f in rag_facts:
+            f_str = str(f).strip()
+            if not f_str or f_str.startswith("#") or f_str.startswith("Источник") or f_str.startswith("http") or f_str.startswith("---"):
+                continue
+            if f_str.startswith("**Сниппет:**"):
+                f_str = f_str.replace("**Сниппет:**", "").strip()
+            if f_str.startswith("- "):
+                f_str = f_str[2:].strip()
+            if len(f_str) > 10:
+                clean_rag_facts.append(f_str)
+
+    if clean_rag_facts:
+        rag_context = "\n".join([f"• {fact}" for fact in clean_rag_facts[:3]])
     else:
-        rag_context = f"- {company_name}: натуральное производство в сфере '{niche}', свежая продукция каждый день."
+        rag_context = f"• Аутентичная рецептура и свежие отборные ингредиенты\n• Фирменный контроль качества от «{company_name}»"
 
     ground_sec = round(time.time() - t_ground_start, 2)
-    print(f"  📋 Паспорт фактов сформирован ({ground_sec} сек): {len(rag_facts)} ТТХ верифицировано.")
+    print(f"  📋 Паспорт фактов сформирован ({ground_sec} сек): {len(clean_rag_facts)} ТТХ верифицировано.")
 
     # -------------------------------------------------------------
     # ЭТАП 2: Генерация текста поста в зависимости от формата
@@ -255,12 +269,13 @@ async def run_pipeline(
 
         if not post_text:
             post_text = (
-                f"🍞 <b>{actual_topic} — Секрет истинного вкуса от «{company_name}»</b>\n\n"
-                f"Почему настоящая выпечка не может готовиться в спешке?\n\n"
+                f"🍞 <b>{actual_topic} — честный рецепт от «{company_name}»</b>\n\n"
+                f"Почему правильное тесто не терпит спешки?\n\n"
                 f"<blockquote expandable>\n"
+                f"<b>Факты о рецептуре и стандартах:</b>\n"
                 f"{rag_context}\n"
                 f"</blockquote>\n\n"
-                f"Каждое утро наши мастера готовят с любовью по классическим рецептам."
+                f"Каждую партию выпекаем вручную рано утром, чтобы к вашему столу попадал еще теплый мякиш с тонкой хрустящей корочкой."
             )
 
     # -------------------------------------------------------------

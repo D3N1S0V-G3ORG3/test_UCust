@@ -431,6 +431,85 @@ class SaigaLLMSkill:
             "mood_tags": moods
         }
 
+    def generate_chat(
+        self,
+        messages: List[Dict[str, str]],
+        max_tokens: int = 900,
+        temperature: Optional[float] = None
+    ) -> str:
+        """
+        Универсальный чат-интерфейс генерации ответа LLM.
+        Поддерживает локальную Llama/Saiga, внешний OpenRouter/OpenAI API и fallback-режим.
+        """
+        temp = temperature if temperature is not None else self.temperature
+
+        # 1. Локальный инференс Llama/Saiga NeMo
+        if self._is_loaded and self._llm and os.getenv("DISABLE_LOCAL_LLM", "").lower() not in ["1", "true", "yes"]:
+            try:
+                response = self._llm.create_chat_completion(
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    temperature=temp,
+                    top_p=self.top_p,
+                    repeat_penalty=self.repetition_penalty
+                )
+                content = response["choices"][0]["message"]["content"].strip()
+                if content:
+                    return content
+            except Exception as e:
+                print(f"[SaigaSkill] ⚠️ Ошибка локального create_chat_completion: {e}")
+
+        # 2. Внешний API (OpenRouter / OpenAI)
+        api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
+        if api_key:
+            try:
+                import httpx
+                is_openrouter = bool(os.getenv("OPENROUTER_API_KEY"))
+                base_url = "https://openrouter.ai/api/v1/chat/completions" if is_openrouter else "https://api.openai.com/v1/chat/completions"
+                model_name = os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct") if is_openrouter else os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+                headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+                payload = {"model": model_name, "messages": messages, "max_tokens": max_tokens, "temperature": temp}
+                res = httpx.post(base_url, json=payload, headers=headers, timeout=30.0)
+                if res.status_code == 200:
+                    data = res.json()
+                    return data["choices"][0]["message"]["content"].strip()
+            except Exception as e:
+                print(f"[SaigaSkill] ⚠️ Ошибка External API: {e}")
+
+        # 3. Fallback через generate_smm_post
+        sys_content = next((m["content"] for m in messages if m.get("role") == "system"), "")
+        user_content = next((m["content"] for m in messages if m.get("role") == "user"), "")
+        topic = "Продукт"
+        company = "Компания"
+        niche = "бизнес"
+        for line in user_content.splitlines():
+            if "Тема:" in line:
+                topic = line.split("Тема:", 1)[1].strip()
+            elif "Компания" in line or "'" in line:
+                m_comp = re.search(r"'(.*?)'", line)
+                if m_comp:
+                    company = m_comp.group(1)
+            if "ниша:" in line:
+                m_niche = re.search(r"ниша:\s*([^,\)]+)", line)
+                if m_niche:
+                    niche = m_niche.group(1).strip()
+
+        res_dict = self.generate_smm_post(
+            topic=topic,
+            company_name=company,
+            niche=niche,
+            rag_context=sys_content
+        )
+        return res_dict.get("text", "")
+
+    async def generate(self, system_prompt: str, user_prompt: str, response_format: str = "text") -> str:
+        """Асинхронная обертка над generate_chat."""
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ]
+        return self.generate_chat(messages=messages)
+
     def generate_smm_post(
         self,
         topic: str,
