@@ -199,15 +199,15 @@ class ComfyCLIRunner:
                 node_type = node.get("type", "")
                 title = str(node.get("title", ""))
 
-                # 0a. Полное отключение Lightning LoRA (Node 6) для раскрытия физики диффузии RES4LYF
+                # 0a. Активация Lightning LoRA (Node 6) для ультрабыстрой 4-8 шаговой диффузии (15-25 сек)
                 if node_type in {"LoraLoaderBypassModelOnly", "LoraLoader"} or nid == 6:
                     if nid == 6 or "lightning" in str(node.get("widgets_values", [])).lower():
-                        lightning_strength = 0.0
+                        lightning_strength = 1.0
                         if "widgets_values" in node and len(node["widgets_values"]) >= 2:
                             node["widgets_values"][1] = lightning_strength
                         if "widgets_values_named" in node:
                             node["widgets_values_named"]["strength_model"] = lightning_strength
-                        node["mode"] = 2  # Полный bypass Lightning LoRA
+                        node["mode"] = 0  # Active Lightning LoRA
 
                 # 0b. Точная калибровка Famegrid_RealSkinFix LoRA (Node 19) с весом 0.68
                 if node_type in {"LoraLoaderBypassModelOnly", "LoraLoader"} or nid == 19:
@@ -293,10 +293,9 @@ class ComfyCLIRunner:
                         node["widgets_values_named"]["width"] = target_w
                         node["widgets_values_named"]["height"] = target_h
 
-                # 5. RES4LYF & Anti-CGI Sampler (ClownsharKSampler_Beta / KSampler / SDE Samplers)
-                sampler_steps = 30
-                sampler_cfg = 3.2 if has_human else 3.8
-                # Переключение на SDE-семплирование и SGM Uniform / Beta для ликвидации пластикового "мультяшного" света
+                # 5. Lightning & Anti-CGI Fast Sampler (ClownsharKSampler_Beta / KSampler / SDE Samplers)
+                sampler_steps = 6
+                sampler_cfg = 1.0 if not has_human else 1.2
                 sampler_name = "dpmpp_2m_sde"
                 sampler_scheduler = "sgm_uniform"
 
