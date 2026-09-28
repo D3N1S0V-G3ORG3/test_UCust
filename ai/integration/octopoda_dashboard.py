@@ -70,6 +70,7 @@ def _dashboard_html() -> str:
         "<script>"
         f"localStorage.setItem('octopoda_api_key', {json.dumps(_local_key())});"
         "localStorage.setItem('octopoda_tenant_id', 'dev');"
+        "localStorage.setItem('octopoda_email', 'dev@ucust.local');"
         "</script>"
     )
     return index_html.replace("</head>", f"{bootstrap}</head>", 1)
@@ -84,11 +85,14 @@ def _safe_static_file(path: str) -> Path | None:
 
 
 def _proxy_request_headers(request: Request) -> dict[str, str]:
-    return {
+    headers = {
         name: value
         for name, value in request.headers.items()
         if name.lower() not in HOP_BY_HOP_HEADERS and name.lower() != "host"
     }
+    if "authorization" not in [k.lower() for k in headers]:
+        headers["authorization"] = f"Bearer {_local_key()}"
+    return headers
 
 
 def _proxy_response_headers(response: httpx.Response) -> dict[str, str]:

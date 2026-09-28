@@ -15,10 +15,6 @@ import http.server
 import urllib.request
 import urllib.error
 import urllib.parse
-import http.server
-import urllib.request
-import urllib.error
-import urllib.parse
 import sys
 
 FLASK_PORT = 7842
@@ -49,7 +45,7 @@ AUTH_SCRIPT = f"""
 
 class ProxyHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
-        print(f"  [{self.command}] {self.path}")
+        pass  # Quiet logging
 
     def _proxy(self, method):
         # Если это запрос к API (/v1/...) — шлём на Uvicorn (8741)
@@ -61,8 +57,6 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             url = f"http://127.0.0.1:{FLASK_PORT}{self.path}"
             target_port = FLASK_PORT
 
-        print(f"  [PROXY DEBUG] {method} {self.path} -> {url}")
-
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length) if length > 0 else b""
 
@@ -71,12 +65,19 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             if k.lower() not in ("host", "connection", "transfer-encoding"):
                 headers[k] = v
         headers["Host"] = f"127.0.0.1:{target_port}"
+        if "authorization" not in [k.lower() for k in headers]:
+            headers["Authorization"] = "Bearer local-dev"
 
         req = urllib.request.Request(url, data=body or None, headers=headers, method=method)
         try:
-            resp = urllib.request.urlopen(req, timeout=10)
+            resp = urllib.request.urlopen(req, timeout=15)
         except urllib.error.HTTPError as e:
             resp = e
+        except Exception as e:
+            self.send_response(502)
+            self.end_headers()
+            self.wfile.write(f"Bad Gateway: {e}".encode("utf-8"))
+            return
 
         raw = resp.read()
         content_type = resp.headers.get("Content-Type", "")
@@ -124,9 +125,9 @@ def main():
     print(f"  Dashboard: http://localhost:{PROXY_PORT}/dashboard")
     print(f"  Agents:    http://localhost:{PROXY_PORT}/dashboard/agents")
     print("=" * 56)
-    print("  Ready. Press Ctrl+C to stop.")
+    print("  Ready.")
 
-    server = http.server.HTTPServer(("127.0.0.1", PROXY_PORT), ProxyHandler)
+    server = http.server.ThreadingHTTPServer(("0.0.0.0", PROXY_PORT), ProxyHandler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -135,3 +136,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
