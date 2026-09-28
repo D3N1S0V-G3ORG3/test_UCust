@@ -408,11 +408,11 @@ async def run_pipeline(
             except Exception as add_err:
                 logger.warning(f"Ошибка вариации #{v_idx}: {add_err}")
 
-    # Если запрошена мозаика/пазл и есть мастер-фото, делаем нарезку слоев
-    if clean_format in ["mosaic", "grid", "puzzle"] and all_photo_paths:
+    # Если запрошена интерактивная механика пазла (Mix & Match) и есть мастер-фото, делаем нарезку слоев
+    if clean_format in ["puzzle"] and all_photo_paths:
         try:
             from PIL import Image
-            print(f"  🧩 Нарезка мастер-кадра на 4 согласованных сегмента мозаики...")
+            print(f"  🧩 Нарезка мастер-кадра на 4 согласованных сегмента интерактивного пазла...")
             slicer = InteractivePuzzleSlicer()
             master_img = Image.open(all_photo_paths[0])
             slices = slicer.slice_image(master_img)
@@ -425,9 +425,9 @@ async def run_pipeline(
                 sliced_paths.append(os.path.abspath(sl_path))
             if sliced_paths:
                 all_photo_paths = sliced_paths
-                print(f"  ✅ Мозаика из {len(sliced_paths)} слоев успешно сформирована!")
+                print(f"  ✅ Интерактивный пазл из {len(sliced_paths)} слоев успешно сформирован!")
         except Exception as slice_err:
-            logger.warning(f"Нарезка мозаики: {slice_err}")
+            logger.warning(f"Нарезка пазла: {slice_err}")
 
     photo_sec = round(time.time() - t_photo_start, 2)
     total_duration = round(time.time() - start_total, 2)

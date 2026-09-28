@@ -1180,7 +1180,17 @@ class CinematographyDirector:
             subject = "centered top-down flatlay of artisanal Easter Kulich on a minimalist warm ceramic plate, glossy pastel pink or snowy-white glaze dome garnished with freeze-dried strawberry crumbles and soft mini marshmallows"
             environment = f"{niche_universe['setting']}, {niche_universe['props']}"
         elif any(w in topic_lower for w in ["кулич", "пасх", "куличи", "пасхальн", "освящен"]):
-            subject = "tall cylindrical golden-brown artisanal Easter Kulich brioche cake baked in a pleated brown Panettone paper mold with floral print, crowned with a thick glossy white royal icing glaze, delicately garnished strictly on top with fine multi-colored pastel round nonpareil sugar pearls and subtle micro-flecks of edible gold leaf (clean traditional Easter sugar sprinkles evenly scattered, no nuts), eye-level macro depth with background pastries in creamy bokeh"
+            kulich_archetypes = [
+                # Вариация 0: Hero Tabletop — общий праздничный натюрморт
+                "tall cylindrical golden-brown artisanal Easter Kulich brioche cake baked in a pleated brown Panettone paper mold with floral print, crowned with a thick glossy white royal icing glaze, delicately garnished strictly on top with fine multi-colored pastel round nonpareil sugar pearls and subtle micro-flecks of edible gold leaf (clean traditional Easter sugar sprinkles evenly scattered, no nuts), standing centered on a minimalist white ceramic pedestal cake stand, beside a handcrafted ceramic bowl of vibrantly dyed solid terracotta and sage-green matte Easter eggs, fluffy pussy willow vase in soft background",
+                # Вариация 1: Macro Texture & Glaze Drips — макро-детали глазури и посыпки
+                "extreme macro eye-level photograph centered on the glossy white meringue glaze dome of the artisanal Easter Kulich, capturing thick slow-flowing creamy glaze drips over the pleated kraft paper collar, evenly scattered fine pastel nonpareil sugar pearls and glowing micro-flakes of edible gold leaf with razor-sharp tactile texture, blurred warm bakery background in creamy bokeh",
+                # Вариация 2: Appetizing Crumb Cross-Section / Slice — разрез волокнистого мякиша
+                "centered eye-level photograph of a freshly cut artisanal Easter Kulich on a white ceramic pedestal stand, with an appetizing single slice placed cleanly in front revealing the airy, golden, fibrous brioche crumb texture studded with plump rum-soaked raisins and candied citrus zest, gentle wisps of rising steam, soft morning window light",
+                # Вариация 3: Festive Serving & Dyed Eggs — композиция с крашеными яйцами и вербой
+                "centered tabletop composition with a rustic handcrafted ceramic bowl filled with vibrantly dyed solid terracotta, deep ruby-amber, and sage-green matte Easter eggs in sharp focus, accompanied by velvety silver pussy willow sprigs on a frayed linen runner, with the tall glazed Easter Kulich in pleated kraft wrapper standing gracefully in soft creamy background bokeh"
+            ]
+            subject = kulich_archetypes[var % len(kulich_archetypes)]
             environment = f"{niche_universe['setting']}, {niche_universe['props']}"
         elif "кофе" in topic_lower or "эфиопи" in topic_lower or "капучин" in topic_lower:
             subject = "artisanal ceramic cup of creamy cappuccino with intricate latte art, fresh ripe peach slice and delicate white jasmine flowers on saucer, gentle rising steam"
