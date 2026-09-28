@@ -236,7 +236,8 @@ class AutonomousResearchGrounder:
             except Exception as e:
                 logger.warning(f"Ошибка дистилляции LLM ({e}). Переход на детерминированный парсер фактов.")
 
-        # Эвристический детерминированный фоллбэк: очистка текста от markdown-разметки
+        # Эвристический детерминированный фоллбэк: очистка текста от markdown-разметки и IT/B2B-жаргона
+        is_consumer_niche = any(w in f"{niche} {clean_name}".lower() for w in ["пекарн", "кулич", "хлеб", "еда", "ресторан", "салон", "красот", "бьюти", "авто", "кафе", "выпечк"])
         cleaned_specs = []
         for line in snippets_text.splitlines():
             line = line.strip()
@@ -246,6 +247,9 @@ class AutonomousResearchGrounder:
                 line = line.replace("**Сниппет:**", "").strip()
             if line.startswith("- "):
                 line = line[2:].strip()
+            # Фильтр смыслового загрязнения (Semantic Bleed Purge)
+            if is_consumer_niche and any(j in line.lower() for j in ["b2b", "llm", "сквозную аналитику", "верификации гипотез", "автоматизация коммуникаций", "документооборот", "спецификация"]):
+                continue
             if len(line) > 20 and not any(line.startswith(p) for p in ["###", "##", "#"]):
                 cleaned_specs.append(line)
 
