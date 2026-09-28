@@ -31,9 +31,15 @@ class IndustryArchetype(str, Enum):
 
 class ContentFormat(str, Enum):
     SINGLE_SHOT = "single_shot"
+    CAROUSEL = "carousel"              # Мульти-ракурсная карусель / альбом
     CAROUSEL_LIGHT = "carousel_light"  # До 3 слайдов
     CAROUSEL_HEAVY = "carousel_heavy"  # До 5 слайдов
+    MOSAIC = "mosaic"                  # Мозаика / Сетка фото (Grid Layout)
+    POLL = "poll"                      # Интерактивный опрос
+    QUIZ = "quiz"                      # Викторина с правильным ответом и пояснением
+    STORYTELLING = "storytelling"      # Объектный сторителлинг
     CRYPTEX_PUZZLE = "cryptex_puzzle"  # 4-слойный интерактивный пазл
+    PUZZLE = "puzzle"
 
 
 class PostLifecycleStatus(str, Enum):
@@ -71,7 +77,7 @@ class PostDraft(BaseModel):
     post_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     brand_id: str
     target_date: datetime
-    format: ContentFormat
+    format: ContentFormat = ContentFormat.SINGLE_SHOT
     status: PostLifecycleStatus = PostLifecycleStatus.DRAFT_TEXT
     text_content: Optional[str] = None
     image_specs: List[ImageGenerationSpec] = Field(default_factory=list)
@@ -82,6 +88,8 @@ class PostDraft(BaseModel):
     callback_url: Optional[str] = None
     selected_sku: Optional[Dict[str, Any]] = None
     disambiguation_chips: List[Dict[str, Any]] = Field(default_factory=list)
+    poll_data: Optional[Dict[str, Any]] = None
+    mosaic_specs: Optional[List[Dict[str, Any]]] = None
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
 

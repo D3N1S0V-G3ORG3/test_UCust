@@ -1967,13 +1967,92 @@ curl -X POST "http://localhost:8000/api/v1/content/bind-sku" \
     },
     "image_specs": [
       {
-        "prompt": "A commercial photograph of commercial tabletop product shot of Тафт Объем 5 (Мятно-зеленый), resting on minimalist light Scandinavian oak vanity surface. Set in airy sunlit modern salon interior with soft round mirrors and fresh botanical greenery in creamy bokeh. Illuminated by natural diffused morning window daylight 5000K, clean organic contact shadows. Shot on 85mm f/1.8 prime lens, shallow depth of field, tactile micro-textures, authentic reflections, zero CGI.",
+        "prompt": "A commercial photograph of commercial tabletop product shot of Тафт Объем 5 (Мятно-зеленый)...",
         "shot_intent": "product_only"
       }
     ]
   }
 }
 ```
+
+---
+
+## 15. Мультиформатная генерация (Карусель, Мозаика, Опросы, Викторины, Пазлы) и богатое нативное форматирование Telegram 7.2+
+
+Платформа UCust AI поддерживает расширенную матрицу форматов контента и глубокую нативную разметку Telegram Bot API 7.2+.
+
+---
+
+### 15.1. Матрица форматов публикаций (`post_format`)
+
+| Формат (`post_format`) | Описание и применение | Визуальный медиа-пакет |
+| :--- | :--- | :--- |
+| **`single`** | Классический продающий пост для ленты (1 фокусный объект). | 1 коммерческая фотография 1:1, 4:5 или 16:9 |
+| **`carousel`** | Альбом из 3–5 фото (пошаговый рецепт, этапы преображения, линейка вкусов). | Медиагруппа из 3–5 согласованных ракурсов |
+| **`mosaic` / `grid`** | Бесшовная сетка 2x2 или 4 горизонтальных слайса для вирусного визуала. | Мастер-кадр, нарезанный через `InteractivePuzzleSlicer` |
+| **`poll`** | Интерактивный опрос аудитории (TOFU / MOFU / BOFU) со сбором мнений. | Вводный пост + Telegram Native Poll (2–10 опций) |
+| **`quiz`** | Экспертная викторина с проверкой знаний, скрытым ответом и объяснением. | Пост с `<tg-spoiler>` + Telegram Native Quiz |
+| **`storytelling`** | Повествование от первого лица (история создания, традиции, секреты шефа). | Художественное фото с акцентом на фактуру и историю |
+| **`puzzle`** | Интерактивный конструктор-пазл Mix & Match для вовлечения в комментариях. | 4-слойная нарезка с интерактивным вызовом |
+
+---
+
+### 15.2. Спецификация нативного форматирования Telegram 7.2+
+
+```html
+<!-- 1. Спойлеры для интриги, секретов и ответов викторин -->
+💡 <b>Правильный ответ:</b> <tg-spoiler>Натуральная опара выстаивается 12 часов</tg-spoiler>
+
+<!-- 2. Раскрывающиеся цитаты (Expandable Blockquotes) -->
+<blockquote expandable>
+<b>Состав и секреты мастеров:</b>
+• 100% натуральная закваска
+• Цукаты из сицилийского апельсина
+• Глазурь на основе бельгийского белого шоколада
+</blockquote>
+
+<!-- 3. Кликабельные промокоды и телефоны (копирование в 1 клик) -->
+🎟️ Промокод недели: <code>СВЕЖЕСТЬ2026</code> (скидка 15%)
+📞 Прямая связь: <code>+7 (999) 123-45-67</code>
+
+<!-- 4. Зачеркивание старой цены при акциях -->
+🏷️ <b>Цена сегодня:</b> <s>890 ₽</s> <b>690 ₽</b>
+
+<!-- 5. Инлайн-кнопки (Inline Keyboards) -->
+[ 🛍️ Оформить заказ ] -> https://t.me/BakeryBot/order
+[ 📍 Как добраться (Карта) ] -> https://yandex.ru/maps/...
+```
+
+---
+
+### 15.3. Примеры вызова из CLI (`scripts/run_autonomous_campaign.py`)
+
+#### 1. Викторина со скрытым спойлером, зачеркнутой ценой и раскрывающейся цитатой:
+```bash
+python scripts/run_autonomous_campaign.py \
+  --prompt "Кулич" \
+  --company "Пекарня у Дома" \
+  --niche "пекарня" \
+  --format quiz \
+  --spoiler "Секретный ингредиент — мадагаскарская ваниль" \
+  --old-price "890 ₽" \
+  --new-price "690 ₽" \
+  --quote "Настоящий кулич должен выстаиваться не менее 12 часов" \
+  --promo "КУЛИЧ2026"
+```
+
+#### 2. Карусель из 3 фото с инлайн-кнопкой заказа:
+```bash
+python scripts/run_autonomous_campaign.py \
+  --prompt "Праздничный сет десертов" \
+  --company "Пекарня у Дома" \
+  --niche "пекарня" \
+  --format carousel \
+  --batch-variations 3 \
+  --cta-url "https://t.me/BakeryBot/order" \
+  --cta-label "🛍️ Заказать к празднику"
+```
+
 
 
 
