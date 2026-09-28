@@ -252,8 +252,19 @@ async def run_pipeline(
             f"Тема: {actual_topic}\n"
             f"Формат: {clean_format}\n"
             f"Фреймворк: {framework or 'PAS'}\n"
-            f"Используй нативную HTML-разметку: <b>жирный заголовок</b>, <blockquote expandable>ключевые детали состава</blockquote>, <code>промокод</code>."
+            f"Триггер: {trigger or 'scarcity_fomo'}\n"
+            f"Длина: 400-650 символов (лаконично, емко, без воды).\n"
         )
+        if quote_text:
+            user_msg += f"\nЦитата мастера: «{quote_text}» (оберни в <blockquote expandable><b>Слово шеф-мастера:</b>\n«{quote_text}»</blockquote>)."
+        if old_price and new_price:
+            user_msg += f"\nСкидка: старая цена {old_price}, новая цена {new_price} (вставь в формате: 🏷️ <b>Специальная цена:</b> <s>{old_price}</s> <b>{new_price}</b>)."
+        if secret_spoiler:
+            user_msg += f"\nСекретный подарок: {secret_spoiler} (оберни в: 🎁 <b>Секретный подарок:</b> <tg-spoiler>{secret_spoiler}</tg-spoiler>)."
+        if promo_code:
+            user_msg += f"\nПромокод: строго <code>{promo_code}</code> (НЕ придумывай другие промокоды!)."
+        if cta_label:
+            user_msg += f"\nПризыв к действию: нажать кнопку ниже [{cta_label}]."
 
         try:
             from skills.saiga_llm import SaigaLLMSkill
@@ -263,7 +274,7 @@ async def run_pipeline(
                     {"role": "system", "content": system_msg},
                     {"role": "user", "content": user_msg}
                 ]
-                post_text = llm.generate_chat(messages=messages, max_tokens=900)
+                post_text = llm.generate_chat(messages=messages, max_tokens=700)
         except Exception as llm_err:
             logger.warning(f"Локальный инференс Saiga LLM: {llm_err}")
 
@@ -279,22 +290,43 @@ async def run_pipeline(
             )
 
     # -------------------------------------------------------------
-    # ЭТАП 2.1: Обогащение богатым нативным форматированием (Rich Post Formatter)
+    # ЭТАП 2.1: Обогащение и зачистка штампов / фейковых промокодов
     # -------------------------------------------------------------
-    # Вставка цитаты шефа / мастера при наличии
-    if quote_text:
+    # Очистка от шаблонных фраз и фейковых кодов вроде PAS23
+    if promo_code:
+        post_text = re.sub(r'\b(PAS23|PAS2023|PAS26|PROMO\w*)\b', promo_code, post_text, flags=re.IGNORECASE)
+        post_text = re.sub(r'<code>(?!' + re.escape(promo_code) + r')[^<]+</code>', f'<code>{promo_code}</code>', post_text)
+
+    # Удаление канцелярских строк
+    cliche_lines = [
+        "Позиционируется как:",
+        "Звони нам или оформляй заказ в директ",
+        "звони нам или в директ",
+        "в директ",
+        "маленькое чудо, которое оживает прямо в ваших руках",
+        "Сделаем вашу Пасху яркой и вкусной!"
+    ]
+    cleaned_lines = []
+    for line in post_text.splitlines():
+        if any(cl.lower() in line.lower() for cl in cliche_lines):
+            continue
+        cleaned_lines.append(line)
+    post_text = "\n".join(cleaned_lines).strip()
+
+    # Вставка цитаты шефа / мастера при наличии (если модель не вставила сама)
+    if quote_text and quote_text not in post_text:
         post_text += f"\n\n<blockquote expandable><b>Слово шеф-мастера:</b>\n«{quote_text}»</blockquote>"
 
-    # Вставка скидок со зачеркиванием старой цены
-    if old_price and new_price:
+    # Вставка скидок со зачеркиванием старой цены (если еще нет)
+    if old_price and new_price and new_price not in post_text:
         post_text += f"\n\n🏷️ <b>Специальная цена недели:</b> <s>{old_price}</s> <b>{new_price}</b>"
 
-    # Вставка спойлера интриги / секрета
-    if secret_spoiler:
+    # Вставка спойлера интриги / секрета (если еще нет)
+    if secret_spoiler and secret_spoiler not in post_text:
         post_text += f"\n\n🎁 <b>Секретный подарок:</b> <tg-spoiler>{secret_spoiler}</tg-spoiler>"
 
-    # Вставка кликабельного промокода и QR
-    if promo_code:
+    # Вставка кликабельного промокода (если еще нет)
+    if promo_code and promo_code not in post_text:
         post_text += f"\n\n🎟️ Назовите промокод <code>{promo_code}</code> на кассе или в боте для получения скидки 15%."
 
     # Финальная очистка и конвертация в 100% валидный Telegram HTML

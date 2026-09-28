@@ -64,11 +64,11 @@ class AchievementBroadcaster:
         return session_base
 
     @staticmethod
-    def split_text_for_telegram(text: str, max_caption_len: int = 950, target_ratio: float = 0.40) -> tuple[str, str]:
+    def split_text_for_telegram(text: str, max_caption_len: int = 1000, target_ratio: float = 0.85) -> tuple[str, str]:
         """
         Умное разделение текста на 2 сообщения:
         - Если текст помещается в лимит подписи фото (<= max_caption_len) -> возвращает (text, "")
-        - Если текст большой -> делит по смысловым абзацам в пропорции ~40% (фото) + 60% (второе сообщение).
+        - Если текст превышает 1000 символов -> наполняет подпись фото по максимуму (до 980 символов) по границам абзацев, а остаток переносит во 2-е сообщение.
         """
         if not text:
             return "", ""
@@ -80,9 +80,6 @@ class AchievementBroadcaster:
         if len(paragraphs) <= 1:
             paragraphs = [p.strip() for p in clean.split("\n") if p.strip()]
 
-        total_len = len(clean)
-        target_len = int(total_len * target_ratio)
-
         part1_paras = []
         part2_paras = []
         accumulated_len = 0
@@ -91,9 +88,8 @@ class AchievementBroadcaster:
         for p in paragraphs:
             p_len = len(p) + 2
             if not split_done:
-                # Если добавление текущего абзаца не превышает hard limit max_caption_len
-                # и мы еще не набрали целевые 40% (или это первый вводный абзац)
-                if (accumulated_len + p_len <= max_caption_len) and (accumulated_len + p_len <= target_len or not part1_paras):
+                # Наполняем подпись фото максимально вплоть до max_caption_len
+                if accumulated_len + p_len <= max_caption_len or not part1_paras:
                     part1_paras.append(p)
                     accumulated_len += p_len
                 else:
