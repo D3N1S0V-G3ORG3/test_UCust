@@ -2085,3 +2085,50 @@ python -u -m synrix_runtime.start --no-browser
 curl -I http://localhost:8741/docs
 curl -I http://localhost:7842/
 ```
+
+---
+
+## 17. Модульная архитектура навыков (Skills Registry & Progressive Disclosure)
+
+Платформа **UCust AI** реализует трехуровневую модульную архитектуру навыков агентов с прогрессивной загрузкой (*Progressive Disclosure*), снижающую потребление контекста LLM на 60–75%.
+
+---
+
+### 17.1. Уровни жизненного цикла навыков
+
+1. **Discovery (Обнаружение):** Оркестратор и агенты загружают в базовый системный промпт только компактный манифест (`name`, `category`, `description`, `triggers`) — около 50 токенов на скил.
+2. **Activation (Активация):** Полное тело инструкций `SKILL.md` подгружается в контекст только при возникновении соответствующей задачи или триггеров в запросе.
+3. **Execution (Исполнение):** Внутренние движки и алгоритмы выполняются на Python без засорения контекста генеративной модели.
+
+---
+
+### 17.2. Карта распределения навыков по агентам платформы
+
+| Агент | Активные навыки (`ai/skills/`) | Ключевой функционал |
+| :--- | :--- | :--- |
+| **`orchestrator`** | `All Skills` | Автоматический роутинг задач, прогрессивная активация модулей, сквозной пайплайн. |
+| **`Agent_Copywriter`** | `prose_refinement`, `marketing_frameworks` | Нативная разметка Telegram 7.2+ (`<tg-spoiler>`, `<blockquote expandable>`, `<code>`, `<s>`), формулы PAS, AIDA, 4U, BAB, ODC. |
+| **`Agent_FactChecker`** | `claim_verification`, `pre_mortem_critic` | Атомарная декомпозиция утверждений, сверка с `FactSheet` (Zero Assumptions), аудит Чарли Мангера 2.0 (поиск клише, CTA, утечек). |
+| **`Agent_Visual_Director`** | `image_prompt_director` | Студийные световые схемы (Rim Light, Softbox), цветовая рифма фона и флакона, селектор ракурсов `ShotIntent` с автоматическим байпасом LoRA. |
+| **`Agent_Analyst`** | `competitor_teardown` | Декомпозиция конкурентов, выявление слабых мест (Vulnerability Scan), формулирование отстройки и JTBD персон. |
+| **`Agent_Interviewer`** | `adaptive_onboarding` | Адаптивное диалоговое анкетирование без трения, автодополнение по ссылкам, синтез 5 экранов профиля компании. |
+
+---
+
+### 17.3. Программный доступ к реестру навыков
+
+```python
+from ai.skills.skill_registry import SkillRegistry
+
+# Инициализация и авто-обнаружение скилов
+registry = SkillRegistry.get_instance()
+
+# Получение блока навыков для системного промпта копирайтера
+copywriter_skills_prompt = registry.get_prompt_discovery_block("Agent_Copywriter")
+
+# Активация навыка при получении задачи с триггером "карусель" или "промокод"
+activated_instructions = registry.auto_activate_for_task(
+    agent_name="Agent_Copywriter",
+    task_context="Подготовь карусель с промокодом на скидку"
+)
+```

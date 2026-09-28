@@ -10,7 +10,13 @@ import logging
 import os
 from typing import Any, Dict, Optional
 
-from skills.comfy_cli_runner import ComfyCLIRunner
+try:
+    from .comfy_cli_runner import ComfyCLIRunner
+except ImportError:
+    try:
+        from skills.comfy_cli_runner import ComfyCLIRunner
+    except ImportError:
+        ComfyCLIRunner = None
 
 logger = logging.getLogger("comfyui_local_skill")
 
