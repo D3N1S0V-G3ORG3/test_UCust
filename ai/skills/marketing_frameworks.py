@@ -36,11 +36,16 @@ class MarketingFramework(str, Enum):
 
 
 class PsychologicalTrigger(str, Enum):
-    SOCIAL_PROOF = "social_proof"    # Отзывы, цифры клиентов, рейтинг 4.9
-    SCARCITY_FOMO = "scarcity_fomo"  # Дефицит, ограничение по времени/слотам
-    AUTHORITY = "authority"          # Оборудование, сертификаты, технологии, опыт
-    RECIPROCITY = "reciprocity"      # Бесплатная польза, расчет сметы, чек-лист до продажи
-    RISK_REVERSAL = "risk_reversal"  # Гарантия возврата, договор, оплата по результату
+    # Психологические модели Чарли Мангера (Mental Models of Misjudgment):
+    REWARD_SUPER_RESPONSE = "reward_super_response"  # Сверхреакция на вознаграждение (кешбэк, баллы, мгновенная выгода)
+    SOCIAL_PROOF = "social_proof"                    # Социальное доказательство (отзывы, бестселлеры, рейтинг 4.9, выбор большинства)
+    PAVLOVIAN_ASSOCIATION = "pavlovian_association"  # Павловский эффект ассоциаций (статус, эстетика, приятный образ, эмоция)
+    DEPRIVAL_FOMO = "deprival_fomo"                  # Эффект дефицита и боязнь потери (Deprival Super-Reaction, осталось 2 шт)
+    SCARCITY_FOMO = "scarcity_fomo"                  # Алиас для Scarcity
+    AUTHORITY = "authority"                          # Авторитет (сертификаты, технологии, экспертность, признание)
+    RECIPROCITY = "reciprocity"                      # Взаимный обмен (бесплатная польза, расчет, подарок до покупки)
+    RISK_REVERSAL = "risk_reversal"                  # Снятие риска (гарантия возврата, договор, тест-драйв)
+    LOLLAPALOOZA = "lollapalooza"                    # Эффект Лоллапалуза (синергия 3-4 триггеров одновременно)
 
 
 class ValueLadderTier(str, Enum):
@@ -287,25 +292,44 @@ class MarketingFrameworkDirector:
     }
 
     TRIGGER_TEMPLATES = {
+        PsychologicalTrigger.REWARD_SUPER_RESPONSE: (
+            "💰 Сверхреакция на вознаграждение (Reward Super-Response): Начислим {cashback}% кешбэка "
+            "и подарочный бонус прямо на карту при первом заказе."
+        ),
         PsychologicalTrigger.SOCIAL_PROOF: (
-            "⭐ Социальное доказательство: Более {client_count} довольных клиентов уже выбрали нас. "
+            "⭐ Социальное доказательство (Social Proof): Более {client_count} довольных клиентов уже выбрали нас. "
             "Средний рейтинг на картах — {rating} из 5.0."
+        ),
+        PsychologicalTrigger.PAVLOVIAN_ASSOCIATION: (
+            "✨ Павловский эффект ассоциаций (Pavlovian Association): Безупречная эстетика, статус и комфорт. "
+            "Почувствуйте уверенность в каждом прикосновении и восхищенные взгляды."
+        ),
+        PsychologicalTrigger.DEPRIVAL_FOMO: (
+            "⏳ Эффект дефицита и боязнь потери (Deprival Super-Reaction): Спецпредложение действует строго до 23:59. "
+            "В наличии осталось всего {slots_count} единицы / свободных слота."
         ),
         PsychologicalTrigger.SCARCITY_FOMO: (
             "⏳ Ограничение и дефицит: Спецпредложение действует строго до конца недели. "
             "Осталось всего {slots_count} свободных слота на замер/консультацию."
         ),
         PsychologicalTrigger.AUTHORITY: (
-            "🏛️ Экспертность и технологии: Официальный контроль качества, немецкое оборудование "
+            "🏛️ Экспертность и технологии: Официальный контроль качества, профессиональное оборудование "
             "и команда сертифицированных специалистов с опытом от 7 лет."
         ),
         PsychologicalTrigger.RECIPROCITY: (
-            "🎁 Принцип взаимности: Мы подготовили бесплатный расчет сметы и 3D-визуализацию для вас — "
+            "🎁 Принцип взаимности: Мы подготовили бесплатный расчет сметы и экспертную консультацию для вас — "
             "никаких скрытых условий и навязывания."
         ),
         PsychologicalTrigger.RISK_REVERSAL: (
             "🛡️ Полное снятие рисков: Работаем строго по договору с фиксированной ценой "
-            "и официальной гарантией до 5 лет."
+            "и официальной гарантией качества."
+        ),
+        PsychologicalTrigger.LOLLAPALOOZA: (
+            "🔥 Эффект Lollapalooza (Синергия 4 триггеров): "
+            "1. Выбор {client_count} клиентов (Социальное доказательство). "
+            "2. Осталось всего {slots_count} места со скидкой (Дефицит). "
+            "3. Кешбэк {cashback}% и подарок к заказу (Вознаграждение). "
+            "4. Гарантия результата по договору (Снятие рисков)."
         )
     }
 
@@ -332,7 +356,7 @@ class MarketingFrameworkDirector:
         """
         fw_info = cls.FRAMEWORK_DESCRIPTIONS.get(framework, cls.FRAMEWORK_DESCRIPTIONS[MarketingFramework.AIDA])
         stage_strategy = cls.HUNT_STAGE_STRATEGIES.get(hunt_stage, cls.HUNT_STAGE_STRATEGIES[HuntStage.STAGE_2_PROBLEM_AWARE])
-        trigger_text = cls.TRIGGER_TEMPLATES.get(trigger, "").format(client_count="1 200+", rating="4.9", slots_count="3")
+        trigger_text = cls.TRIGGER_TEMPLATES.get(trigger, "").format(client_count="1 200+", rating="4.9", slots_count="3", cashback="15")
         
         # 1. JTBD трансформация
         jtbd = JTBDTransformer.transform_feature(niche, raw_feature)
@@ -395,7 +419,8 @@ class MarketingFrameworkDirector:
         с JTBD-акцентом, продуктовой ступенью и низкофрикционным призывом по модели Фогга.
         """
         f_info = cls.FRAMEWORK_DESCRIPTIONS[framework]
-        t_text = cls.TRIGGER_TEMPLATES[trigger].format(client_count="1 200+", rating="4.9", slots_count="3")
+        t_template = cls.TRIGGER_TEMPLATES.get(trigger, "")
+        t_text = t_template.format(client_count="1 200+", rating="4.9", slots_count="3", cashback="15")
         jtbd = JTBDTransformer.transform_feature(niche, raw_feature)
         fogg_cta = FoggCTAGenerator.generate_low_friction_cta(
             action_type="direct_keyword",

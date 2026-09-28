@@ -192,12 +192,33 @@ class CriticMungerSkill:
         else:
             audit_breakdown['platform_nativity'] = True
 
+        # 7. MUNGER PSYCHOLOGICAL INDEX (MPI) & LOLLAPALOOZA SYNERGY
+        detected_psychological_triggers = []
+        if re.search(r'скидк\w+|кешбэк\w*|бонус\w*|промокод\w*|подарок\w*|бесплатн\w+|выгод\w+', text_lower):
+            detected_psychological_triggers.append('reward_super_response')
+        if re.search(r'отзыв\w*|клиент\w*|выбира\w+|рейтинг\w*|бестселлер\w*|\d+\s*довольных|звезд\w*|рекоменд\w+', text_lower):
+            detected_psychological_triggers.append('social_proof')
+        if re.search(r'эстетик\w*|статус\w*|уверенност\w*|наслажд\w*|уют\w*|стил\w+|вдохнов\w*|чувств\w*|атмосфер\w*', text_lower):
+            detected_psychological_triggers.append('pavlovian_association')
+        if re.search(r'остал\w+|только до|до конца недели|до \d+:\d+|ограничен\w+|последн\w+|всего \d+|дефицит\w*', text_lower):
+            detected_psychological_triggers.append('deprival_fomo')
+        if re.search(r'гаранти\w*|договор\w*|сертификат\w*|официальн\w*|возврат\w*|тест-драйв\w*', text_lower):
+            detected_psychological_triggers.append('risk_reversal_authority')
+
+        is_lollapalooza = len(detected_psychological_triggers) >= 3
+        if is_lollapalooza:
+            score = min(1.0, score + 0.10)
+            audit_breakdown['lollapalooza_synergy'] = True
+        else:
+            audit_breakdown['lollapalooza_synergy'] = False
+
         score = max(0.1, min(1.0, round(score, 2)))
         passed = score >= self.strictness
 
         if passed:
             verdict = 'APPROVED'
-            criticism = 'Текст полностью прошел аудит качества: сильный хук, чистота лексики квадранта, отсутствие оксюморонов и выдержанный ритм.'
+            synergy_msg = " [🔥 LOLLAPALOOZA SYNERGY ACTIVE]" if is_lollapalooza else ""
+            criticism = f'Текст полностью прошел аудит качества: сильный хук, чистота лексики квадранта, отсутствие оксюморонов и выдержанный ритм.{synergy_msg}'
             actionable_feedback = 'Готово к публикации.'
         else:
             verdict = 'REVISE_NEEDED'
@@ -210,6 +231,8 @@ class CriticMungerSkill:
                 feedback_parts.append('Устраните оксюморон: не продавайте софт и оптимизацию в посте про питомцев/еду/религию.')
             if not audit_breakdown.get('brand_voice', True):
                 feedback_parts.append(f'Удалите штампы: {found_cliches}.')
+            if not is_lollapalooza and len(detected_psychological_triggers) < 2:
+                feedback_parts.append('Усильте конверсию: добавьте хотя бы 2 триггера Мангера (например, Скидка + Ограничение по времени или Отзывы).')
             actionable_feedback = ' '.join(feedback_parts) if feedback_parts else 'Улучшите структуру и естественность текста.'
 
         return {
@@ -220,5 +243,10 @@ class CriticMungerSkill:
             'actionable_feedback': actionable_feedback,
             'fatal_flaws': fatal_flaws,
             'cautions': cautions,
-            'audit_breakdown': audit_breakdown
+            'audit_breakdown': audit_breakdown,
+            'munger_psychology': {
+                'detected_triggers': detected_psychological_triggers,
+                'triggers_count': len(detected_psychological_triggers),
+                'is_lollapalooza': is_lollapalooza
+            }
         }
