@@ -408,6 +408,19 @@ async def run_pipeline(
             except Exception as add_err:
                 logger.warning(f"Ошибка вариации #{v_idx}: {add_err}")
 
+    # Если запрошена мозаика / 2x2 сетка — собираем единый 2x2 коллаж и сплит-квадранты
+    if clean_format in ["mosaic", "grid"] and len(all_photo_paths) >= 4:
+        try:
+            from skills.mosaic_grid_composer import MosaicGridComposer
+            print(f"  🖼️ Сборка мозаичного коллажа 2x2 с единым центром и 4 разными интерьерами...")
+            mosaic_master = MosaicGridComposer.compose_2x2_grid(all_photo_paths, gap=6, gap_color="#F8F6F0")
+            if mosaic_master and os.path.exists(mosaic_master):
+                print(f"  ✅ Мастер-мозаика 2x2 готова: {os.path.basename(mosaic_master)}")
+                # Для публикации мозаики отправляем мастер-коллаж 2x2 во главе альбома
+                all_photo_paths = [mosaic_master] + all_photo_paths[:4]
+        except Exception as mos_err:
+            logger.warning(f"Сборка мозаики 2x2: {mos_err}")
+
     # Если запрошена интерактивная механика пазла (Mix & Match) и есть мастер-фото, делаем нарезку слоев
     if clean_format in ["puzzle"] and all_photo_paths:
         try:
