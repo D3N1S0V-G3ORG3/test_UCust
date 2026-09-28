@@ -238,20 +238,20 @@ class InternalCalendarEngine:
             "keywords": ["пасх", "кулич", "пасхальн", "верб", "яйц", "easter", "kulich"],
             "date_ranges": [(4, 1, 5, 10)],  # Примерный диапазон Пасхи (апрель-май)
             "hero_tabletop": (
-                "a tall artisanal traditional Easter Kulich bread crowned with thick glossy white meringue fondant glaze with slow-moving drips down its golden-brown crust, "
+                "a tall artisanal traditional Easter Kulich brioche bread baked in a pleated brown kraft paper baking capsule with subtle gold filigree details, crowned with thick glossy white meringue fondant glaze with slow-moving drips down the top edge of the paper wrapper, "
                 "artfully decorated strictly on top with dried candied cranberries, crushed pistachios, and delicate micro-flakes of edible gold leaf, "
-                "standing elegantly on a minimalist white ceramic pedestal cake stand, beside a small bowl of naturally dyed terracotta, sage-green, and pastel speckled Easter eggs on an organic linen runner, "
+                "standing elegantly on a minimalist white ceramic pedestal cake stand, beside a small handcrafted ceramic bowl filled with vibrantly dyed solid terracotta, deep ruby-amber, and sage-green matte Easter eggs on an organic linen runner, "
                 "accompanied by a small ceramic vase with fresh fluffy pussy willow branches in soft background"
             ),
             "hero_beauty": (
-                "macro beauty photography of slender female hands with delicate pastel-glazed nails gently cradling a naturally dyed pastel terracotta Easter egg, "
-                "with fluffy velvet pussy willow branches, frayed natural linen runner, and a glazed mini kulich in soft creamy background bokeh with spring morning window light"
+                "macro beauty photography of slender female hands with delicate pastel-glazed nails gently cradling a vibrantly dyed solid terracotta Easter egg, "
+                "with fluffy velvet pussy willow branches, frayed natural linen runner, and a glazed mini kulich in pleated kraft baking wrapper in soft creamy background bokeh with spring morning window light"
             ),
             "surface": "natural textured light oak table with a frayed beige organic linen runner",
             "background": "bright serene dining room with diffused morning spring window daylight, pussy willow vase and pastel ceramics in creamy soft bokeh",
             "window_lighting": "soft diffused morning spring window daylight with delicate airy sunbeams and gentle organic micro-shadows",
-            "foreground_anchor": "(fluffy velvet pussy willow catkins and speckled pastel egg in extreme blurred foreground:1.25)",
-            "vibe_token": "peaceful Easter morning, artisanal glazed kulich, dyed eggs in nest, fluffy pussy willow branches",
+            "foreground_anchor": "(fluffy velvet pussy willow catkins and vibrantly dyed terracotta egg in extreme blurred foreground:1.25)",
+            "vibe_token": "peaceful Easter morning, artisanal glazed kulich in pleated kraft baking capsule, vibrantly dyed terracotta eggs in ceramic bowl, fluffy pussy willow branches",
             "palette_key": "nude"
         },
         "new_year": {
