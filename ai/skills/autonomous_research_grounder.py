@@ -3,48 +3,33 @@ Autonomous Research Grounder for UCust.AI.
 Модуль автономного поиска и дистилляции подтвержденных фактов о неизвестных продуктах,
 новинках и специфических сущностях (Active Grounding & Anti-Hallucination Pipeline).
 
-- 1. Получает результаты веб-поиска через TravitySearchSkill.
-- 2. Дистиллирует поисковый шум в строго типизированную Pydantic-схему FactSheet.
-- 3. Разделяет твердые характеристики (key_specs) и сомнительные заявления (unverified_claims).
-- 4. Формирует замкнутый контекстный блок [FACT_SHEET] для генератора и критика.
-- 5. Кэширует факты с TTL (24 часа) для минимизации внешних API-запросов и задержек.
+- 1. Единый контракт данных: FactSheet (Pydantic).
+- 2. Системный промпт для экстрактора: EXTRACTION_PROMPT.
+- 3. Класс автономного ресёрча: AutonomousResearchGrounder с поддержкой DI (search, llm, cache).
 """
 
 from __future__ import annotations
 
-import os
-import re
 import json
-import time
 import hashlib
 import logging
 import asyncio
-from typing import Dict, Any, List, Optional
-from pydantic import BaseModel, Field
+from typing import List, Optional, Dict, Any
+from pydantic import BaseModel, Field, ValidationError
 
-try:
-    from skills.travity_search import TravitySearchSkill
-except ImportError:
-    try:
-        from ai.skills.travity_search import TravitySearchSkill
-    except ImportError:
-        TravitySearchSkill = None
+logger = logging.getLogger(__name__)
 
-logger = logging.getLogger("autonomous_research_grounder")
 
+# --- 1. Единый контракт данных ---
 
 class FactSheet(BaseModel):
-    """
-    Строго типизированный паспорт подтвержденных фактов о продукте/сущности (Single Source of Truth).
-    """
-    product_name: str = Field(..., description="Точное подтвержденное название продукта или сущности")
-    category: str = Field(..., description="Категория, класс продукта или ниша")
-    key_specs: List[str] = Field(default_factory=list, description="Конкретные подтвержденные технические характеристики, состав или ТТХ")
-    target_audience: Optional[str] = Field(None, description="Целевая аудитория и сценарии применения")
-    unverified_claims: List[str] = Field(default_factory=list, description="Маркетинговые заявления или обещания, требующие осторожной подачи ('Производитель заявляет, что...')")
-    sources: List[str] = Field(default_factory=list, description="Источники (URL или домены), откуда получены данные")
-    confidence_score: float = Field(default=1.0, description="Оценка уверенности ретривера (0.0 - 1.0)")
-    is_grounded: bool = Field(default=True, description="Флаг успешной верификации фактов через внешний источник")
+    product_name: str = Field(..., description="Точное название продукта")
+    category: str = Field(..., description="Класс продукта / ниша")
+    key_specs: List[str] = Field(default=[], description="Подтвержденные технические характеристики, цифры или состав")
+    target_audience: Optional[str] = Field(None, description="Целевая аудитория")
+    unverified_claims: List[str] = Field(default=[], description="Маркетинговые обещания, оценочные суждения (эпитеты), требующие осторожности")
+    sources: List[str] = Field(default=[], description="URL-источники фактов")
+    is_verified: bool = Field(True, description="Флаг наличия подтвержденных фактов")
 
     def to_prompt_block(self) -> str:
         """
@@ -66,159 +51,171 @@ class FactSheet(BaseModel):
             "=== [VERIFIED_FACT_SHEET_END] ==="
         )
 
-    def to_dict(self) -> Dict[str, Any]:
-        return self.model_dump()
 
+# --- 2. Системный промпт для экстрактора ---
+
+EXTRACTION_PROMPT = """
+Ты — строгий аналитик данных. Твоя задача: извлечь сухие факты о продукте "{product_name}" из предоставленных поисковых сниппетов.
+Верни результат СТРОГО в формате JSON, соответствующем схеме:
+{{
+    "product_name": "string",
+    "category": "string",
+    "key_specs": ["string", "string"],
+    "target_audience": "string or null",
+    "unverified_claims": ["string"],
+    "sources": ["url1", "url2"],
+    "is_verified": boolean
+}}
+
+ПРАВИЛА:
+1. В key_specs добавляй только проверяемые факты: цифры, материалы, габариты, точный состав, версии.
+2. Любые фразы вроде "революционный", "лучший в классе", "идеальный выбор", "исцеляет", "премиальный" отправляй в unverified_claims.
+3. Если сниппеты не содержат полезной информации, установи is_verified = false и оставь списки пустыми.
+4. Ничего не выдумывай, используй только текст сниппетов.
+"""
+
+
+# --- 3. Дефолтные реализации зависимостей (Fallback adapters) ---
+
+class InMemoryCacheAdapter:
+    def __init__(self):
+        self._store: Dict[str, str] = {}
+
+    async def get(self, key: str) -> Optional[str]:
+        return self._store.get(key)
+
+    async def set(self, key: str, value: str, ttl: Optional[int] = None) -> None:
+        self._store[key] = value
+
+
+class DefaultSearchAdapter:
+    def __init__(self):
+        try:
+            from skills.travity_search import TravitySearchSkill
+        except ImportError:
+            try:
+                from ai.skills.travity_search import TravitySearchSkill
+            except ImportError:
+                TravitySearchSkill = None
+        self.travity = TravitySearchSkill() if TravitySearchSkill else None
+
+    async def execute(self, query: str, top_k: int = 3) -> List[Dict[str, str]]:
+        if not self.travity:
+            return []
+        md = await self.travity.search(query)
+        if not md or "Результаты поиска не найдены" in md:
+            return []
+        return [{"url": "https://search.ucust.ai", "snippet": md}]
+
+
+# --- 4. Класс автономного ресёрча ---
 
 class AutonomousResearchGrounder:
-    """
-    Интеллектуальный роутер веб-поиска и генератор паспорта фактов FactSheet.
-    """
-
     def __init__(
         self,
-        search_skill: Optional[TravitySearchSkill] = None,
-        cache_ttl_seconds: int = 86400  # 24 часа
-    ) -> None:
-        self.search_skill = search_skill or (TravitySearchSkill() if TravitySearchSkill else None)
-        self.cache_ttl = cache_ttl_seconds
-        self._cache: Dict[str, Dict[str, Any]] = {}
-
-    def _get_cache_key(self, query: str, niche: str) -> str:
-        raw = f"{query.strip().lower()}::{niche.strip().lower()}"
-        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
-    def _get_from_cache(self, cache_key: str) -> Optional[FactSheet]:
-        entry = self._cache.get(cache_key)
-        if not entry:
-            return None
-        if time.time() - entry["timestamp"] > self.cache_ttl:
-            del self._cache[cache_key]
-            return None
-        return entry["fact_sheet"]
-
-    def _save_to_cache(self, cache_key: str, fact_sheet: FactSheet) -> None:
-        self._cache[cache_key] = {
-            "fact_sheet": fact_sheet,
-            "timestamp": time.time()
-        }
-
-    async def research_product(
-        self,
-        product_query: str,
-        niche: str = "",
-        raw_text_context: Optional[str] = None
-    ) -> FactSheet:
+        search_client: Optional[Any] = None,
+        llm_client: Optional[Any] = None,
+        cache_client: Optional[Any] = None
+    ):
         """
-        Выполняет автономный веб-ресёрч по неизвестному продукту и собирает FactSheet.
+        Инициализация зависимостей.
+        search_client: интерфейс для поиска (метод execute(query, top_k) -> [{'url': '', 'snippet': ''}])
+        llm_client: интерфейс для обращения к LLM (метод generate(system_prompt, user_prompt, response_format))
+        cache_client: интерфейс Redis/Cache (методы get(key) и set(key, value, ttl))
         """
-        clean_query = product_query.strip()
-        if not clean_query:
+        self.search = search_client or DefaultSearchAdapter()
+        self.llm = llm_client
+        self.cache = cache_client or InMemoryCacheAdapter()
+        self.cache_ttl = 86400  # 24 часа
+
+    def _generate_cache_key(self, product_name: str) -> str:
+        safe_name = product_name.strip().lower()
+        name_hash = hashlib.md5(safe_name.encode("utf-8")).hexdigest()
+        return f"factsheet:{name_hash}"
+
+    async def extract_facts(self, product_name: str, niche: str = "") -> FactSheet:
+        """
+        Асинхронно извлекает верифицированный паспорт фактов FactSheet.
+        """
+        clean_name = product_name.strip()
+        if not clean_name:
             return FactSheet(
-                product_name="Общий продукт",
-                category=niche or "Бизнес",
-                key_specs=["Стандартное премиальное качество"],
-                target_audience="Клиенты компании",
-                is_grounded=False
+                product_name="Unknown",
+                category=niche or "General",
+                is_verified=False
             )
 
-        cache_key = self._get_cache_key(clean_query, niche)
-        cached = self._get_from_cache(cache_key)
-        if cached:
-            logger.info(f"⚡ [AutonomousResearch] FactSheet для '{clean_query}' взят из кэша (0ms latency).")
-            return cached
-
-        # 1. Поиск в сети через Travity/Tavily
-        search_query = f"{clean_query} {niche} характеристики спецификация состав особенности".strip()
-        search_markdown = ""
-
-        if self.search_skill:
-            try:
-                search_markdown = await self.search_skill.search(search_query)
-            except Exception as e:
-                logger.warning(f"⚠️ [AutonomousResearch] Ошибка внешнего веб-поиска для '{clean_query}': {e}")
-
-        # 2. Дистилляция фактов в FactSheet
-        fact_sheet = self._distill_facts(clean_query, niche, search_markdown, raw_text_context)
-        self._save_to_cache(cache_key, fact_sheet)
-
-        logger.info(
-            f"✅ [AutonomousResearch] Сформирован верифицированный FactSheet для '{fact_sheet.product_name}' "
-            f"(Спецификаций: {len(fact_sheet.key_specs)}, Осторожных заявлений: {len(fact_sheet.unverified_claims)})"
-        )
-        return fact_sheet
-
-    def _distill_facts(
-        self,
-        product_name: str,
-        niche: str,
-        search_markdown: str,
-        extra_context: Optional[str] = None
-    ) -> FactSheet:
-        """
-        Детерминированная и эвристическая дистилляция веб-контекста в чистый FactSheet.
-        """
-        combined_text = f"{search_markdown}\n{extra_context or ''}".strip()
+        cache_key = self._generate_cache_key(clean_name)
         
-        if not combined_text or "Результаты поиска не найдены" in combined_text:
-            return FactSheet(
-                product_name=product_name,
-                category=niche or "Товары и услуги",
-                key_specs=["Фирменный продукт компании"],
-                target_audience="Клиенты и ценители качества",
-                unverified_claims=[],
-                is_grounded=False,
-                confidence_score=0.4
+        # 1. Проверка кэша
+        cached_data = await self.cache.get(cache_key)
+        if cached_data:
+            logger.info(f"FactSheet найден в кэше для: {clean_name}")
+            return FactSheet.model_validate_json(cached_data)
+
+        # 2. Асинхронный сбор данных из сети (Search Fallback)
+        logger.info(f"Кэш пуст. Запуск веб-поиска для: {clean_name}")
+        search_query = f"{clean_name} {niche} характеристики официальный спецификация".strip()
+        
+        search_results = []
+        if self.search:
+            search_results = await self.search.execute(query=search_query, top_k=3)
+
+        if not search_results:
+            logger.warning(f"Поиск не дал результатов для: {clean_name}")
+            empty_sheet = FactSheet(
+                product_name=clean_name,
+                category=niche or "Unknown",
+                is_verified=False
             )
+            return empty_sheet
 
-        # Извлечение чистых технических характеристик (регулярные шаблоны цифр, параметров, весов, технологий)
-        lines = combined_text.split("\n")
-        specs: List[str] = []
-        unverified: List[str] = []
-        sources: List[str] = []
+        # Подготовка контекста для LLM
+        snippets_text = "\n---\n".join([f"Источник ({r.get('url', 'N/A')}): {r.get('snippet', '')}" for r in search_results])
+        sources_list = [r.get('url') for r in search_results if r.get('url')]
 
-        spec_patterns = [
-            re.compile(r'(\d+[\.,]?\d*\s*(?:г|кг|мл|л|гц|ghz|mhz|mah|мач|вт|w|v|в|мм|см|м|gb|гб|tb|тб|mp|мп|fps|°c|%))', re.IGNORECASE),
-            re.compile(r'(процессор|чипсет|материал|сорт|ферментация|регион|высота произрастания|обжарка|ноты вкуса|состав|ткань|аккумулятор|дисплей|экран|камера|интерфейс)', re.IGNORECASE)
-        ]
+        # 3. LLM-дистилляция в JSON
+        prompt = EXTRACTION_PROMPT.format(product_name=clean_name)
+        
+        if self.llm:
+            try:
+                llm_response = await self.llm.generate(
+                    system_prompt=prompt,
+                    user_prompt=f"Сниппеты:\n{snippets_text}",
+                    response_format="json" 
+                )
+                
+                # Валидация через Pydantic
+                raw_dict = json.loads(llm_response)
+                raw_dict["sources"] = sources_list  # Принудительно пробрасываем URL
+                fact_sheet = FactSheet(**raw_dict)
 
-        suspicious_words = ["лучший в мире", "100% гарантия", "абсолютный прорыв", "мгновенный эффект", "чудо", "революционный"]
+                # 4. Сохранение в кэш
+                await self.cache.set(cache_key, fact_sheet.model_dump_json(), ttl=self.cache_ttl)
+                return fact_sheet
 
-        for line in lines:
-            line_clean = line.strip().lstrip("-*•# ").strip()
-            if not line_clean or len(line_clean) < 10:
-                continue
+            except (json.JSONDecodeError, ValidationError, Exception) as e:
+                logger.error(f"Ошибка дистилляции LLM: {e}")
+                return FactSheet(
+                    product_name=clean_name,
+                    category="Parsing Error",
+                    is_verified=False
+                )
+        else:
+            # Эвристический фоллбэк если LLM-клиент не передан в конструктор
+            fact_sheet = FactSheet(
+                product_name=clean_name,
+                category=niche or "Product",
+                key_specs=[snippets_text[:200]] if snippets_text else [],
+                sources=sources_list,
+                is_verified=True
+            )
+            await self.cache.set(cache_key, fact_sheet.model_dump_json(), ttl=self.cache_ttl)
+            return fact_sheet
 
-            # Поиск источников URL
-            if "http://" in line_clean or "https://" in line_clean:
-                urls = re.findall(r'https?://[^\s\)]+', line_clean)
-                sources.extend(urls)
-                continue
-
-            # Разделение на твердые ТТХ и маркетинговые клеймы
-            is_suspicious = any(sw in line_clean.lower() for sw in suspicious_words)
-            has_spec = any(p.search(line_clean) for p in spec_patterns)
-
-            if is_suspicious:
-                if len(unverified) < 4:
-                    unverified.append(line_clean[:140])
-            elif has_spec:
-                if len(specs) < 6 and line_clean not in specs:
-                    specs.append(line_clean[:140])
-
-        if not specs:
-            specs = [f"Оригинальный продукт в категории {niche or 'товары'}"]
-
-        return FactSheet(
-            product_name=product_name,
-            category=niche or "Специализированный продукт",
-            key_specs=specs,
-            target_audience="Покупатели, ценящие точные характеристики и надежность",
-            unverified_claims=unverified,
-            sources=list(set(sources))[:3],
-            confidence_score=0.9 if len(specs) >= 2 else 0.6,
-            is_grounded=True
-        )
+    async def research_product(self, product_query: str, niche: str = "") -> FactSheet:
+        """Алиас для обратной совместимости."""
+        return await self.extract_facts(product_query, niche=niche)
 
     def inject_grounding_to_system_prompt(self, base_system_prompt: str, fact_sheet: FactSheet) -> str:
         """
