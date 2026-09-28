@@ -1180,7 +1180,7 @@ class CinematographyDirector:
             subject = "centered top-down flatlay of artisanal Easter Kulich on a minimalist warm ceramic plate, glossy pastel pink or snowy-white glaze dome garnished with freeze-dried strawberry crumbles and soft mini marshmallows"
             environment = f"{niche_universe['setting']}, {niche_universe['props']}"
         elif any(w in topic_lower for w in ["кулич", "пасх", "куличи", "пасхальн", "освящен"]):
-            subject = "tall cylindrical golden-brown artisanal Easter Kulich brioche cake baked in a pleated brown Panettone paper mold with floral print, crowned with a thick glossy white royal icing glaze, decorated with emerald green pistachio sponge moss crumble and pastel sugar candy eggs, eye-level macro depth with background pastries in creamy bokeh"
+            subject = "tall cylindrical golden-brown artisanal Easter Kulich brioche cake baked in a pleated brown Panettone paper mold with floral print, crowned with a thick glossy white royal icing glaze, delicately garnished strictly on top with fine multi-colored pastel nonpareil sugar pearls, finely minced roasted pistachio dust (natural matte olive tone, no large chunks), and subtle micro-flecks of edible gold leaf, eye-level macro depth with background pastries in creamy bokeh"
             environment = f"{niche_universe['setting']}, {niche_universe['props']}"
         elif "кофе" in topic_lower or "эфиопи" in topic_lower or "капучин" in topic_lower:
             subject = "artisanal ceramic cup of creamy cappuccino with intricate latte art, fresh ripe peach slice and delicate white jasmine flowers on saucer, gentle rising steam"
