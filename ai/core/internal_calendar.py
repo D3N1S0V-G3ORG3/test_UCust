@@ -239,9 +239,9 @@ class InternalCalendarEngine:
             "date_ranges": [(4, 1, 5, 10)],  # Примерный диапазон Пасхи (апрель-май)
             "hero_tabletop": (
                 "a tall artisanal traditional Easter Kulich bread crowned with thick glossy white meringue fondant glaze with slow-moving drips down its golden-brown crust, "
-                "artfully decorated with dried candied cranberries, crushed pistachios, and delicate flakes of edible gold leaf, "
-                "surrounded by a rustic woven twig nest holding naturally dyed terracotta, onion-skin amber, and pastel speckled Easter eggs, "
-                "accompanied by several fresh fluffy pussy willow branches with soft velvety silver-grey catkins in a minimalist artisan ceramic jug"
+                "artfully decorated strictly on top with dried candied cranberries, crushed pistachios, and delicate micro-flakes of edible gold leaf, "
+                "standing elegantly on a minimalist white ceramic pedestal cake stand, beside a small bowl of naturally dyed terracotta, sage-green, and pastel speckled Easter eggs on an organic linen runner, "
+                "accompanied by a small ceramic vase with fresh fluffy pussy willow branches in soft background"
             ),
             "hero_beauty": (
                 "macro beauty photography of slender female hands with delicate pastel-glazed nails gently cradling a naturally dyed pastel terracotta Easter egg, "
