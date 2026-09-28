@@ -91,7 +91,17 @@ class FactCheckingCritic:
                 patches.append(patch)
                 sanitized = re.sub(re.escape(m), replacement, sanitized)
 
-        # 2. Если FactSheet предоставлен, сверяем числовые метрики
+        # 2. Очистка от технических утечек поисковой выдачи и сырого markdown
+        search_leak_patterns = [
+            (re.compile(r'[-–—]?\s*Источник\s*\(https?://[^\)]+\):\s*#+[^\n]*', re.IGNORECASE), ""),
+            (re.compile(r'#+\s*\d*\.?\s*Аналитический обзор[^\n]*', re.IGNORECASE), ""),
+            (re.compile(r'#+\s*Актуальные рыночные тренды:[^\n]*', re.IGNORECASE), ""),
+        ]
+        for pattern, replacement in search_leak_patterns:
+            if pattern.search(sanitized):
+                sanitized = pattern.sub(replacement, sanitized)
+
+        # 3. Если FactSheet предоставлен, сверяем числовые метрики
         if fact_sheet and fact_sheet.is_grounded:
             known_context = " ".join(fact_sheet.key_specs).lower()
             product_name_lower = fact_sheet.product_name.lower()
@@ -101,15 +111,19 @@ class FactCheckingCritic:
             found_metrics = cls.METRIC_PATTERN.findall(text)
             for metric in set(found_metrics):
                 metric_clean = metric.strip().lower()
-                # Извлекаем только число
                 num_part = re.search(r'\d+', metric_clean)
                 if num_part:
                     num_val = num_part.group(0)
-                    # Если числа нет в подтвержденных ТТХ FactSheet
+                    # Исключаем цены, промокоды и цитаты
+                    if any(w in metric_clean for w in ["₽", "руб", "usd", "$", "eur", "€"]):
+                        continue
                     if num_val not in combined_known and len(num_val) >= 2:
-                        # Заменяем точную выдуманную цифру на качественную формулировку
-                        safe_replacement = "оптимальный показатель"
-                        if "%" in metric_clean:
+                        safe_replacement = "необходимый срок"
+                        if any(u in metric_clean for u in ["дней", "дня", "день", "суток"]):
+                            safe_replacement = "длительное время"
+                        elif any(u in metric_clean for u in ["часов", "часа", "час", "минут"]):
+                            safe_replacement = "строго выверенное время"
+                        elif "%" in metric_clean:
                             safe_replacement = "выгодные специальные условия"
                         elif any(u in metric_clean for u in ["mah", "мач"]):
                             safe_replacement = "емкий аккумулятор"
@@ -125,6 +139,9 @@ class FactCheckingCritic:
                         )
                         patches.append(patch)
                         sanitized = sanitized.replace(metric, safe_replacement)
+
+        # Удаляем пустые лишние строки
+        sanitized = re.sub(r'\n{3,}', '\n\n', sanitized).strip()
 
         report = FactValidationReport(
             is_fully_grounded=len(patches) == 0,
