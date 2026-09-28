@@ -2053,8 +2053,35 @@ python scripts/run_autonomous_campaign.py \
   --cta-label "🛍️ Заказать к празднику"
 ```
 
+---
 
+## 16. Запуск и интеграция сервиса Octopoda Agent Runtime (v3.0.3)
 
+Служба **Octopoda Agent Runtime** обеспечивает долговременную память агентов, трекинг контекста сессий и графический дашборд.
 
+---
 
+### 16.1. Архитектура и запущенные порты
 
+| Сервис | Порт | URL | Назначение |
+| :--- | :--- | :--- | :--- |
+| **Octopoda Dashboard** | `7842` | [http://localhost:7842](http://localhost:7842) | Графический веб-интерфейс (React SPA) для инспекции памяти, агентов и графов знаний. |
+| **Octopoda Cloud API** | `8741` | [http://localhost:8741](http://localhost:8741) | REST API для создания сессий, агентов, чтения и записи долговременной памяти. |
+| **API Документация (Swagger/OpenAPI)** | `8741` | [http://localhost:8741/docs](http://localhost:8741/docs) | Интерактивная документация REST эндпоинтов Octopoda. |
+
+---
+
+### 16.2. Команды запуска и управления
+
+#### Фоновый запуск сервиса:
+```bash
+# Из директории ai/:
+python -u -m synrix_runtime.start --no-browser
+```
+
+#### Проверка статуса сервиса (Health Check):
+```bash
+# Проверка доступности API и Дашборда:
+curl -I http://localhost:8741/docs
+curl -I http://localhost:7842/
+```
