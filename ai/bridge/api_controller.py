@@ -806,4 +806,55 @@ async def analyze_brand_multimodal(
     return res.data
 
 
+class SKUSearchResponse(BaseModel):
+    status: str = "success"
+    query: str
+    count: int
+    chips: List[Dict[str, Any]]
+
+
+class BindSKURequest(BaseModel):
+    project_id: str = Field(..., description="ID проекта/бренда")
+    topic: str = Field(..., description="Исходная тема или название продукта")
+    sku_id: str = Field(..., description="ID выбранного SKU из чипов")
+    aspect_ratio: str = Field(default="1:1", description="Формат кадра (1:1, 4:5, 9:16, 16:9)")
+    profile: Optional[Dict[str, Any]] = Field(default=None, description="Профиль бизнеса")
+
+
+@app.get("/api/v1/content/sku-search", response_model=SKUSearchResponse)
+async def sku_search_endpoint(
+    query: str,
+    x_internal_secret: Optional[str] = Header(None, alias="X-Internal-Secret")
+) -> SKUSearchResponse:
+    from skills.geo_entity_resolver import GeoEntityResolver
+    chips = GeoEntityResolver.resolve_disambiguation_chips(query)
+    return SKUSearchResponse(
+        status="success",
+        query=query,
+        count=len(chips),
+        chips=[c.model_dump() for c in chips]
+    )
+
+
+@app.post("/api/v1/content/bind-sku", response_model=Dict[str, Any])
+async def bind_sku_endpoint(
+    payload: BindSKURequest,
+    x_internal_secret: Optional[str] = Header(None, alias="X-Internal-Secret")
+) -> Dict[str, Any]:
+    from skills.content_generation_engine import ContentGenerationEngine
+    engine = ContentGenerationEngine()
+    draft = await engine.generate_post(
+        project_id=payload.project_id,
+        topic=payload.topic,
+        profile=payload.profile,
+        aspect_ratio=payload.aspect_ratio,
+        sku_id=payload.sku_id
+    )
+    return {
+        "status": "success",
+        "post_draft": draft.model_dump(mode="json")
+    }
+
+
 __all__ = ["app"]
+

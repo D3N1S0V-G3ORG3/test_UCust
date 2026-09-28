@@ -15,8 +15,10 @@ from prompts.telegram_generation_prompt import TELEGRAM_EXPERT_PROMPT
 from skills.rag_retriever_skill import CleanRAGRetrieverSkill
 from skills.audit_deduplication_agent import AuditDeduplicationAgent
 from skills.fact_checking_critic import FactCheckingCritic
+from skills.geo_entity_resolver import GeoEntityResolver, SKUCard
+from skills.autonomous_research_grounder import FactSheet
 from core.lazy_rendering_controller import (
-    PostDraft, PostLifecycleStatus, ContentFormat, ImageGenerationSpec, SubscriptionTier, IndustryArchetype
+    PostDraft, PostLifecycleStatus, ContentFormat, ImageGenerationSpec, SubscriptionTier, IndustryArchetype, ShotIntent
 )
 
 logger = logging.getLogger("ContentGenerationEngine")
@@ -27,9 +29,10 @@ class ContentGenerationEngine:
     Сквозной конвейер генерации постов:
     1. Семантический аудит и защита от повторов (Pre-Mortem Audit, threshold=0.82).
     2. Извлечение фактов из RAG с автоматическим Grounding-фоллбэком при UNKNOWN_ENTITY.
-    3. Генерация текста в Saiga LLM с поддержкой разметки Telegram 7.2+ и Closed-Domain Grounding.
-    4. Факт-чекинг критик и автокоррекция галлюцинаций (FactCheckingCritic).
-    5. Сборка спецификации для отложенного рендера ComfyUI (0 GPU cost на этапе черновика).
+    3. Мгновенная 1-клик привязка FactSheet к выбранному SKU (Disambiguation Chips).
+    4. Генерация текста в Saiga LLM с поддержкой разметки Telegram 7.2+ и Closed-Domain Grounding.
+    5. Факт-чекинг критик и автокоррекция галлюцинаций (FactCheckingCritic).
+    6. Сборка спецификации для отложенного рендера ComfyUI (0 GPU cost на этапе черновика).
     """
 
     def __init__(self, dev_mode: bool = True):
@@ -55,12 +58,13 @@ class ContentGenerationEngine:
         profile: Optional[Dict[str, Any]] = None,
         recent_posts: Optional[List[str]] = None,
         aspect_ratio: str = "1:1",
-        target_channel: Optional[str] = None
+        target_channel: Optional[str] = None,
+        sku_id: Optional[str] = None
     ) -> PostDraft:
         """
-        Генерирует готовый пост в статусе DRAFT_TEXT.
+        Генерирует готовый пост в статусе DRAFT_TEXT с поддержкой мгновенной привязки SKU.
         """
-        logger.info(f"✍️ [ContentGenerationEngine] Генерация поста для project_id='{project_id}', тема='{topic[:50]}'")
+        logger.info(f"✍️ [ContentGenerationEngine] Генерация поста для project_id='{project_id}', тема='{topic[:50]}', sku_id='{sku_id}'")
         profile = profile or {}
         about = profile.get("about", {})
         goals = profile.get("goals", {})
@@ -86,17 +90,43 @@ class ContentGenerationEngine:
                 actual_topic = verdict.suggested_shifted_angle or topic
                 logger.info(f"🔄 [Deduplication] Обнаружен повтор темы. Смещение угла: '{actual_topic}'")
 
-        # 2. Извлечение фактов: RAG + Автономный ресёрч при неизвестных сущностях
-        rag_facts, fact_sheet = await CleanRAGRetrieverSkill.retrieve_with_grounding_fallback(
-            project_id=project_id,
-            query=actual_topic,
-            niche=niche,
-            top_k=3
-        )
-        if rag_facts:
-            rag_context = "\n".join([f"- {fact}" for fact in rag_facts])
+        # 2. Интерактивные чипы точного поиска SKU (Disambiguation Chips)
+        resolved_chips = GeoEntityResolver.resolve_disambiguation_chips(actual_topic)
+        selected_sku: Optional[SKUCard] = None
+
+        if sku_id and resolved_chips:
+            for chip in resolved_chips:
+                if chip.sku_id == sku_id:
+                    selected_sku = chip
+                    break
+
+        if selected_sku:
+            # Мгновенная привязка FactSheet из верифицированной карточки SKU (0 сек задержки)
+            fact_sheet = FactSheet(
+                product_name=selected_sku.full_title,
+                category=selected_sku.line_name,
+                key_specs=selected_sku.key_specs,
+                target_audience=selected_sku.hair_type,
+                unverified_claims=selected_sku.unverified_claims,
+                sources=["PIM Retail Database (magnitcosmetic.ru / goldapple.ru)"],
+                color_marker=selected_sku.color_marker,
+                is_verified=True
+            )
+            rag_facts = selected_sku.key_specs
+            rag_context = "\n".join([f"- {spec}" for spec in selected_sku.key_specs])
+            actual_topic = selected_sku.full_title
         else:
-            rag_context = f"- {company_name}: специализируется на сфере '{niche}', ключевое УТП: {positioning}."
+            # 2.1. Извлечение фактов: RAG + Автономный ресёрч при неизвестных сущностях
+            rag_facts, fact_sheet = await CleanRAGRetrieverSkill.retrieve_with_grounding_fallback(
+                project_id=project_id,
+                query=actual_topic,
+                niche=niche,
+                top_k=3
+            )
+            if rag_facts:
+                rag_context = "\n".join([f"- {fact}" for fact in rag_facts])
+            else:
+                rag_context = f"- {company_name}: специализируется на сфере '{niche}', ключевое УТП: {positioning}."
 
         # 3. Сборка системного и пользовательского промпта для Telegram 7.2+
         system_msg = TELEGRAM_EXPERT_PROMPT.format(
@@ -218,7 +248,9 @@ class ContentGenerationEngine:
             text_content=post_text,
             image_specs=[image_spec],
             rendered_image_urls=[],
-            vram_cost_mb=0
+            vram_cost_mb=0,
+            selected_sku=selected_sku.model_dump() if selected_sku else None,
+            disambiguation_chips=[c.model_dump() for c in resolved_chips]
         )
 
         return post_draft

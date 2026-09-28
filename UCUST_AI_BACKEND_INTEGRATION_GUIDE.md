@@ -1843,12 +1843,137 @@ Visual Prompt = f(Tenant_Aesthetic, Product_Color, Shot_Intent)
 }
 ```
 
-* **`PRODUCT_ONLY` (Предметный натюрморт):**
-  - LoRA RealSkinFix: **Bypass (0.0)**.
-  - Сохраняются зеркальные блики флакона, металлический блеск дозатора и глянцевый пластик колпачка.
-* **`IN_HANDS` / `LIFESTYLE_MODEL` / `POV_USER` (В руках стилиста / Процесс укладки):**
-  - LoRA RealSkinFix: **1.05** (активирована).
-  - Генерируются естественные микротекстуры кожи пальцев, профессиональный маникюр мастера и органичный контактный захват флакона.
+---
+
+## 14. UI/UX Точного поиска SKU: Интерактивные карточки-чипы и мгновенное 1-клик переключение FactSheet
+
+Для обеспечения наилучшего пользовательского опыта (UX) в интерфейсе UCust конечный пользователь (администратор салона, владелец кофейни) **никогда не видит сырой JSON FactSheet** и не должен вручную прописывать технические характеристики продукта.
+
+---
+
+### 14.1. Архитектура 1-клик переключения (Seamless 1-Click Binding)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as Пользователь (UI)
+    participant FE as Frontend (React SPA)
+    participant API as FastAPI Gateway
+    participant Geo as GeoEntityResolver
+    participant Eng as ContentGenerationEngine
+    participant Comfy as ComfyUI (GPU Worker)
+
+    User->>FE: Вводит тему "Тафт" (краткий запрос)
+    FE->>API: GET /api/v1/content/sku-search?query=Тафт
+    API->>Geo: resolve_disambiguation_chips("Тафт")
+    Geo-->>API: [🟩 Тафт Объем 5, 🟦 Taft Ultimate 5+, 🟪 Тафт Кашемир 5]
+    API-->>FE: 200 OK (список SKUCard с цветами и ТТХ)
+    FE-->>User: Отображает интерактивные цветные чипы-карточки
+
+    User->>FE: Нажимает на чип "🟩 Тафт Объем 5" (1 клик!)
+    FE->>API: POST /api/v1/content/bind-sku (sku_id="taft_volume_5")
+    API->>Eng: generate_post(sku_id="taft_volume_5")
+    Note over Eng: FactSheet мгновенно связывается с выбранным SKU<br/>(0 сек задержки, без повторного веб-поиска)
+    Eng-->>API: PostDraft (с верифицированными ТТХ и мятно-зеленым маркером)
+    API-->>FE: 200 OK (Обновленный черновик поста)
+    FE-->>User: Мгновенное обновление текста и превью карточки
+```
+
+---
+
+### 14.2. Спецификация контракта чипов SKU (`SKUCard`)
+
+```json
+{
+  "sku_id": "taft_volume_5",
+  "brand": "Taft",
+  "line_name": "Объем 5",
+  "full_title": "Тафт Объем 5 (Мятно-зеленый)",
+  "color_hex": "#2ECC71",
+  "color_marker": "мятно-зеленый",
+  "hair_type": "для тонких и ослабленных волос",
+  "fixation_level": "5 (Мегафиксация)",
+  "volume_ml": 250,
+  "key_specs": [
+    "Степень фиксации: 5 (Мегафиксация до 24ч)",
+    "Коллаген-комплекс для прикорневого объема",
+    "Формула без склеивания и утяжеления"
+  ],
+  "unverified_claims": [
+    "Головокружительный объем",
+    "Воздушная легкость"
+  ]
+}
+```
+
+---
+
+### 14.3. API Эндпоинты для быстрого поиска и привязки
+
+#### 1. Быстрый поиск доступных SKU: `GET /api/v1/content/sku-search`
+* **cURL:**
+```bash
+curl -X GET "http://localhost:8000/api/v1/content/sku-search?query=Тафт"
+```
+* **Пример ответа (`200 OK`):**
+```json
+{
+  "status": "success",
+  "query": "Тафт",
+  "count": 4,
+  "chips": [
+    {
+      "sku_id": "taft_volume_5",
+      "full_title": "Тафт Объем 5 (Мятно-зеленый)",
+      "color_hex": "#2ECC71",
+      "hair_type": "для тонких и ослабленных волос",
+      "fixation_level": "5 (Мегафиксация)"
+    },
+    {
+      "sku_id": "taft_ultimate_5plus",
+      "full_title": "Taft Ultimate 5+ (Темно-синий)",
+      "color_hex": "#1E3799",
+      "hair_type": "экстремальная фиксация, сияние",
+      "fixation_level": "5+ (Экстремальная)"
+    }
+  ]
+}
+```
+
+#### 2. Мгновенная привязка FactSheet к черновику: `POST /api/v1/content/bind-sku`
+* **cURL:**
+```bash
+curl -X POST "http://localhost:8000/api/v1/content/bind-sku" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "project_id": "beauty_salon_01",
+    "topic": "Тафт",
+    "sku_id": "taft_volume_5",
+    "aspect_ratio": "1:1"
+  }'
+```
+* **Пример ответа (`200 OK`):**
+```json
+{
+  "status": "success",
+  "post_draft": {
+    "post_id": "post_78129a01",
+    "status": "draft_text",
+    "text_content": "✨ <b>Тафт Объем 5: Секрет салонной укладки для тонких волос</b>\n\n<blockquote expandable>\nФиксация 5 до 24 часов и коллаген-комплекс для прикорневого объема без склеивания.\n</blockquote>\n\nЗапишитесь на стайлинг со скидкой 10% на этой неделе!",
+    "selected_sku": {
+      "sku_id": "taft_volume_5",
+      "full_title": "Тафт Объем 5 (Мятно-зеленый)",
+      "color_marker": "мятно-зеленый"
+    },
+    "image_specs": [
+      {
+        "prompt": "A commercial photograph of commercial tabletop product shot of Тафт Объем 5 (Мятно-зеленый), resting on minimalist light Scandinavian oak vanity surface. Set in airy sunlit modern salon interior with soft round mirrors and fresh botanical greenery in creamy bokeh. Illuminated by natural diffused morning window daylight 5000K, clean organic contact shadows. Shot on 85mm f/1.8 prime lens, shallow depth of field, tactile micro-textures, authentic reflections, zero CGI.",
+        "shot_intent": "product_only"
+      }
+    ]
+  }
+}
+```
 
 
 

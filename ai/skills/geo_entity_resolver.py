@@ -180,3 +180,133 @@ class GeoEntityResolver:
             color_marker=color or "мятно-зеленый",
             volume_ml=vol
         )
+
+    @classmethod
+    def resolve_disambiguation_chips(cls, query: str) -> List[SKUCard]:
+        """
+        Возвращает интерактивные карточки-чипы для 1-клик выбора в UI.
+        Точный детерминированный поиск SKU без необходимости пользователю писать ТТХ.
+        """
+        q_lower = query.lower().strip()
+        chips: List[SKUCard] = []
+
+        # Каталог точных SKU для Taft
+        if "тафт" in q_lower or "taft" in q_lower or "лак" in q_lower or "стайлинг" in q_lower:
+            chips.append(
+                SKUCard(
+                    sku_id="taft_volume_5",
+                    brand="Taft",
+                    line_name="Объем 5",
+                    full_title="Тафт Объем 5 (Мятно-зеленый)",
+                    color_hex="#2ECC71",
+                    color_marker="мятно-зеленый",
+                    hair_type="для тонких и ослабленных волос",
+                    fixation_level="5 (Мегафиксация)",
+                    volume_ml=250,
+                    key_specs=[
+                        "Степень фиксации: 5 (Мегафиксация до 24ч)",
+                        "Коллаген-комплекс для прикорневого объема",
+                        "Формула без склеивания и утяжеления"
+                    ],
+                    unverified_claims=["Головокружительный объем", "Воздушная легкость"]
+                )
+            )
+            chips.append(
+                SKUCard(
+                    sku_id="taft_ultimate_5plus",
+                    brand="Taft",
+                    line_name="Ultimate 5+",
+                    full_title="Taft Ultimate 5+ (Темно-синий)",
+                    color_hex="#1E3799",
+                    color_marker="темно-синий",
+                    hair_type="экстремальная фиксация, сияние",
+                    fixation_level="5+ (Экстремальная)",
+                    volume_ml=250,
+                    key_specs=[
+                        "Степень фиксации: 5+ (Экстремальная до 72ч)",
+                        "Жидкий кристалл-комплекс для глянцевого блеска",
+                        "Защита от влажности и ультрафиолета"
+                    ],
+                    unverified_claims=["Сияние жидких кристаллов", "Абсолютная стойкость"]
+                )
+            )
+            chips.append(
+                SKUCard(
+                    sku_id="taft_cashmere_5",
+                    brand="Taft",
+                    line_name="Нежность кашемира 5",
+                    full_title="Тафт Нежность Кашемира (Розовый)",
+                    color_hex="#E056FD",
+                    color_marker="черно-розовый",
+                    hair_type="для сухих и поврежденных волос",
+                    fixation_level="5 (Мегафиксация)",
+                    volume_ml=250,
+                    key_specs=[
+                        "Степень фиксации: 5 (Мегафиксация)",
+                        "Протеины кашемира для мягкости волос",
+                        "Защита от пересушивания горячим феном"
+                    ],
+                    unverified_claims=["Мягкость кашемира", "Шелковистое прикосновение"]
+                )
+            )
+            chips.append(
+                SKUCard(
+                    sku_id="taft_power_caffeine_5",
+                    brand="Taft",
+                    line_name="Power Мегафиксация",
+                    full_title="Taft Power с кофеином (Черный)",
+                    color_hex="#2C3E50",
+                    color_marker="черно-серый",
+                    hair_type="для всех типов волос, укрепление",
+                    fixation_level="5 (Мегафиксация)",
+                    volume_ml=250,
+                    key_specs=[
+                        "Кофеин-комплекс для укрепления структуры",
+                        "Стойкость до 48 часов в любую погоду",
+                        "Не оставляет следов при расчесывании"
+                    ],
+                    unverified_claims=["Энергия кофеина", "Сила от корней до кончиков"]
+                )
+            )
+
+        # Каталог для Kerastase (Selective / Premium)
+        elif "kerastase" in q_lower or "керастаз" in q_lower:
+            chips.append(
+                SKUCard(
+                    sku_id="kerastase_elixir_ultime",
+                    brand="Kérastase",
+                    line_name="Elixir Ultime",
+                    full_title="Kérastase Elixir Ultime Масло (Золотой)",
+                    color_hex="#F1C40F",
+                    color_marker="золотой янтарный",
+                    hair_type="для всех типов волос, питание и термозащита",
+                    fixation_level="Уход / Блеск",
+                    volume_ml=100,
+                    key_specs=[
+                        "Термозащита до 230°C",
+                        "Комплекс 4 драгоценных масел (марула, камелия, кукуруза, аргана)",
+                        "Снижение ломкости волос на 92%"
+                    ],
+                    unverified_claims=["Королевский блеск", "Сублимация материи волос"]
+                )
+            )
+
+        return chips
+
+
+class SKUCard(BaseModel):
+    """
+    Модель карточки SKU для фронтенд-чипов 1-клик выбора.
+    """
+    sku_id: str = Field(..., description="Уникальный идентификатор SKU")
+    brand: str = Field(..., description="Бренд")
+    line_name: str = Field(..., description="Название линейки")
+    full_title: str = Field(..., description="Понятный заголовок для кнопки/чипа в UI")
+    color_hex: str = Field(default="#3498DB", description="HEX-код цвета флакона для UI-бейджа")
+    color_marker: str = Field(..., description="Текстовый цвет флакона для ComfyUI")
+    hair_type: str = Field(..., description="Тип волос и назначение")
+    fixation_level: str = Field(..., description="Степень фиксации или эффект")
+    volume_ml: Optional[int] = Field(default=250, description="Объем в мл")
+    key_specs: List[str] = Field(default=[], description="Верифицированные ТТХ")
+    unverified_claims: List[str] = Field(default=[], description="Маркетинговые тезисы")
+

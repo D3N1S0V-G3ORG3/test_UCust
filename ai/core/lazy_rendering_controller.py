@@ -80,6 +80,8 @@ class PostDraft(BaseModel):
     error_message: Optional[str] = None
     requires_user_action: bool = False
     callback_url: Optional[str] = None
+    selected_sku: Optional[Dict[str, Any]] = None
+    disambiguation_chips: List[Dict[str, Any]] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
 
