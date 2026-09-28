@@ -416,8 +416,8 @@ async def run_pipeline(
             mosaic_master = MosaicGridComposer.compose_2x2_grid(all_photo_paths, gap=6, gap_color="#F8F6F0")
             if mosaic_master and os.path.exists(mosaic_master):
                 print(f"  ✅ Мастер-мозаика 2x2 готова: {os.path.basename(mosaic_master)}")
-                # Для публикации мозаики отправляем мастер-коллаж 2x2 во главе альбома
-                all_photo_paths = [mosaic_master] + all_photo_paths[:4]
+                # Для публикации мозаики отправляем мастер-коллаж 2x2 (квадратный цельный пост с 4 квадрантами)
+                all_photo_paths = [mosaic_master]
         except Exception as mos_err:
             logger.warning(f"Сборка мозаики 2x2: {mos_err}")
 

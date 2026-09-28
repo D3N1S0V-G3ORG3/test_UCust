@@ -937,9 +937,46 @@ class CinematographyDirector:
             persp_key = "diagonal_organic_framing" if var % 2 == 0 else "macro_nail_close_up"
 
         # 1.5. ПРАЗДНИКИ И ТЕМАТИЧЕСКИЕ ИНФОПОВОДЫ (МАСЛЕНИЦА, ПАСХА, НОВЫЙ ГОД, 8 МАРТА, 14 ФЕВРАЛЯ, ХЭЛЛОУИН, СПАС И ДР.)
+        elif any(w in topic_lower for w in ["пасх", "кулич", "пасхальн", "куличи"]):
+            hero_kulich = (
+                "a tall artisanal traditional Easter Kulich brioche bread baked in a pleated brown Panettone kraft paper capsule with delicate gold filigree patterns, "
+                "crowned with thick snowy-white glossy meringue fondant glaze dripping naturally down the top edge, delicately garnished strictly on top with fine multi-colored pastel round nonpareil sugar pearls and subtle micro-flecks of edible gold leaf (clean festive sugar sprinkles, no nuts), "
+                "standing perfectly centered at exact eye-level on a minimalist white ceramic pedestal cake stand"
+            )
+            easter_interiors = [
+                # Вариация 0: Утренняя сканди-столовая с вербой и льном
+                (
+                    f"{hero_kulich}, beside a small handcrafted ceramic bowl of terracotta and sage-green dyed Easter eggs on the left and a ceramic vase with fluffy pussy willow on the right",
+                    "bright serene Scandinavian dining room, soft diffused morning spring window daylight with delicate sunbeams streaming across a light oak table with a beige linen runner, airy pastel room bokeh",
+                    "tabletop_commercial"
+                ),
+                # Вариация 1: Тёплая ремесленная пекарня на рассвете (мука, дерево, теплый свет 2700K)
+                (
+                    f"{hero_kulich}, with a delicate artistic dusting of unrefined white flour on a dark aged wooden countertop",
+                    "cozy warm rustic bakery workshop kitchen at dawn, warm 2700K glowing amber tungsten background light, dark wooden shelving with fresh baked artisan loaves in soft creamy bokeh",
+                    "culinary_macro_eyelevel"
+                ),
+                # Вариация 2: Праздничный вечерний стол со свечами и винтажной посудой
+                (
+                    f"{hero_kulich}, accompanied by natural beeswax candles emitting a gentle warm flickering flame and golden vintage cutlery",
+                    "festive elegant evening Easter dinner atmosphere, dark polished walnut table, warm glowing candlelit ambient light, soft sparkling fairy lights and wine glasses in deep background bokeh",
+                    "tabletop_commercial"
+                ),
+                # Вариация 3: Минималистичная современная кухня со светлым травертином
+                (
+                    f"{hero_kulich}, resting beside a minimalist glass bottle with fresh green spring olive sprigs",
+                    "bright minimalist modern aesthetic kitchen studio, light honed travertine marble stone countertop, crisp clean diffused daylight, serene contemporary architecture in soft bokeh",
+                    "culinary_macro_eyelevel"
+                ),
+            ]
+            chosen = easter_interiors[var % len(easter_interiors)]
+            subject = chosen[0]
+            environment = chosen[1]
+            persp_key = chosen[2]
+
         elif holiday_aesthetic and (
             holiday_aesthetic.get("match_type") == "keyword" or
-            any(w in topic_lower for w in ["маслениц", "блин", "сырн", "пасх", "кулич", "верб", "новый год", "рождеств", "8 март", "мимоз", "валентин", "хэллоуин", "тыква", "спас", "соты", "праздник", "праздничн"])
+            any(w in topic_lower for w in ["маслениц", "блин", "сырн", "верб", "новый год", "рождеств", "8 март", "мимоз", "валентин", "хэллоуин", "тыква", "спас", "соты", "праздник", "праздничн"])
         ):
             subject = holiday_aesthetic["hero_tabletop"]
             environment = holiday_aesthetic["background"]
