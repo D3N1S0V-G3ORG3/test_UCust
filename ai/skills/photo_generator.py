@@ -415,11 +415,13 @@ class QwenPromptAssembler:
                 "same face syndrome", "identical faces", "mannequin", "wax figure",
                 "sharp detailed background", "background noise", "floating objects", "deformed furniture", "deformed wall sockets", "disconnected wires"
             ])
-        elif scene_type in {"product", "culinary", "still_life"}:
+        elif scene_type in {"product", "culinary", "still_life", "beverage", "coffee"}:
             base_negative.extend([
                 "unrealistic reflections", "fake materials", "poor lighting",
                 "artificial repetitive pattern", "out of place objects",
-                "sharp detailed background", "floating objects"
+                "sharp detailed background", "floating objects",
+                "steam hovering over plastic lid", "steam emitting from solid lid", "diffuse steam cloud covering coffee cup",
+                "vapor passing through milk foam", "uniform steam surface", "floating fog above latte art", "physically incorrect smoke"
             ])
         elif scene_type in {"text", "poster", "signage"}:
             base_negative.extend([
@@ -950,16 +952,27 @@ class CinematographyDirector:
             pastry_desc = ", accompanied by a fresh golden-brown flaky French butter croissant on a textured linen napkin with visible buttery layers" if any(w in topic_lower for w in ["круассан", "croissant", "выпечк"]) else ""
             cup_desc = "handcrafted matte ceramic sage-green or earthy cup" if any(w in topic_lower for w in ["керамик", "чашк", "кружк", "cup", "ceramic"]) else "artisan ceramic cup"
 
-            coffee_archetypes = [
-                # Вариация 0: Diagonal Organic Framing (Диагональная подача, лист кофе/растения слева, срез салфетки в углу)
-                f"close-up diagonal commercial tabletop photo of an artisan {cup_desc} with {latte_art} and a contrasting dark espresso rim resting on a smooth off-white travertine surface, in the foreground to the left a vibrant glossy green leaf with serrated edges partially frames the shot in soft blur, subtle sliver of warm golden-yellow natural linen in the upper right corner, soft natural diffused window daylight, delicate wisps of rising steam",
-                # Вариация 1: Руки греются об чашку (эмоция уюта)
-                f"candid close-up lifestyle photo of female hands in cozy knitted sweater sleeves gently cupping a warm {cup_desc} with both palms to warm up, {latte_art} with contrasting dark espresso rim, whisper of translucent warm vapor rising, on a {table_desc}",
-                # Вариация 2: Хват за ручку (момент дегустации)
-                f"candid side-angle photo of a clean hand holding the {cup_desc} by its handle lifting it slightly above ceramic saucer{pastry_desc}, glossy espresso crema and microfoam, subtle translucent heat shimmer rising, morning sunlight on {table_desc}",
-                # Вариация 3: Стол без людей (предметный вид: крема 40-60% или ровный арт)
-                f"macro commercial tabletop photography of a steaming {cup_desc} with golden-brown crema and microfoam covering 50% of surface, placed on a {table_desc} beside roasted coffee beans and a ceramic saucer, subtle translucent heat shimmer"
-            ]
+            is_takeaway = any(w in topic_lower for w in ["стакан", "навынос", "takeaway", "to go", "крышк", "с собой", "бумажн"])
+            steam_takeaway = "a subtle delicate wisp of steam rising strictly from the small sip-hole opening of the lid, plastic lid completely blocks steam, realistic thermodynamics"
+            steam_latte_art = "steam venting specifically from the exposed dark espresso crema gap beside the latte art, dense milk foam blocks vapor, localized steam plume from bare liquid spot"
+
+            if is_takeaway:
+                coffee_archetypes = [
+                    f"close-up candid POV photo of a textured kraft paper takeaway coffee cup with a cardboard sleeve, {steam_takeaway}, held in hand on an autumn city street with soft golden cafe lights in background bokeh",
+                    f"candid tabletop photo of a takeaway paper coffee cup with white plastic lid on {table_desc}, {steam_takeaway}, beside fresh bakery pastries in soft morning window light",
+                    f"commercial macro photo of an artisan takeaway paper coffee cup with branded cardboard sleeve, {steam_takeaway}, sitting on clean travertine stone surface"
+                ]
+            else:
+                coffee_archetypes = [
+                    # Вариация 0: Diagonal Organic Framing (Диагональная подача, лист кофе/растения слева, срез салфетки в углу)
+                    f"close-up diagonal commercial tabletop photo of an artisan {cup_desc} with {latte_art} and a contrasting dark espresso rim resting on a smooth off-white travertine surface, in the foreground to the left a vibrant glossy green leaf with serrated edges partially frames the shot in soft blur, subtle sliver of warm golden-yellow natural linen in the upper right corner, soft natural diffused window daylight, {steam_latte_art}",
+                    # Вариация 1: Руки греются об чашку (эмоция уюта)
+                    f"candid close-up lifestyle photo of female hands in cozy knitted sweater sleeves gently cupping a warm {cup_desc} with both palms to warm up, {latte_art} with contrasting dark espresso rim, {steam_latte_art}, on a {table_desc}",
+                    # Вариация 2: Хват за ручку (момент дегустации)
+                    f"candid side-angle photo of a clean hand holding the {cup_desc} by its handle lifting it slightly above ceramic saucer{pastry_desc}, glossy espresso crema and microfoam, {steam_latte_art}, morning sunlight on {table_desc}",
+                    # Вариация 3: Стол без людей (предметный вид: крема 40-60% или ровный арт)
+                    f"macro commercial tabletop photography of an artisan {cup_desc} with golden-brown crema and microfoam covering 50% of surface, placed on a {table_desc} beside roasted coffee beans and a ceramic saucer, {steam_latte_art}"
+                ]
             subject = coffee_archetypes[var % len(coffee_archetypes)]
             environment = "cozy sunlit specialty craft coffee shop, warm morning sunbeams streaming through window, soft golden bokeh in background"
             persp_key = "diagonal_organic_framing" if var % 2 == 0 else "culinary_macro_eyelevel"
@@ -1591,6 +1604,7 @@ class PhotoGeneratorSkill:
         "plastic chest skin, airbrushed body, blurry decollete, smooth plastic skin, airbrushed face, "
         "sharp detailed background, background noise, high-frequency background grain, floating objects, deformed furniture, deformed wall sockets, disconnected wires, "
         "gibberish text, misspelled letters, blurry typography, double letters, deformed writing, "
+        "steam hovering over plastic lid, steam emitting from solid lid, diffuse steam cloud covering coffee cup, vapor passing through milk foam, uniform steam surface, floating fog above latte art, physically incorrect smoke, "
         "nsfw, nude, naked, explicit, bad anatomy, deformed fingers, extra limbs, blurry face, bad eyes, "
         "low quality, oversaturated, plastic 3d render, watermark, text, signature"
     )

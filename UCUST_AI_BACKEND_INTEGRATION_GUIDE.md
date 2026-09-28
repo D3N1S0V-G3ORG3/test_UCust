@@ -1612,4 +1612,33 @@ Negative Prompt:
 bright pink blush, intense rosy cheeks, sunburn, clown makeup, painted blush, rosacea, unnatural cheek redness, plastic skin, airbrushed body, blurry decollete, deformed hands, fused fingers, missing fingers, extra digits, asymmetrical pupils, crossed eyes, gibberish text, misspelled letters, blurry typography, sharp detailed background, floating objects, deformed furniture, background noise
 ```
 
+---
+
+### 10.4. Физика пара и пароотведения горячих напитков (Steam Thermodynamics & Beverage Physics)
+
+Для достижения максимального фотореализма фуд- и лайфстайл-генераций (кофе, чай, глинтвейн, горячий шоколад) строго соблюдаются законы термодинамики и физики парообразования:
+
+#### 1. Стаканчики с крышкой (Takeaway cups / Paper coffee cups):
+* **Физическое ограничение:** Плотная пластиковая крышка герметично блокирует выход пара по всей площади купола.
+* **Точка выхода:** Пар выходит **ИСКЛЮЧИТЕЛЬНО** тонкой прозрачной струйкой строго из открытого питьевого отверстия (`sip-hole` / `drinking spout`) или микроскопического компенсационного клапана.
+* **Категорически запрещено:** Размещать диффузное облако пара над всей поверхностью крышки, вокруг ее бортов или пропускать пар сквозь сплошной пластик.
+* **Формулировка в Positive Prompt:**
+  ```text
+  a subtle, delicate wisp of steam rising strictly from the small sip-hole opening of the lid, plastic lid completely blocks steam, realistic thermodynamics
+  ```
+
+#### 2. Чашки с кофе-артом и молочной пеной (Капучино, Латте, Флэт Уайт):
+* **Физическое ограничение:** Плотная взбитая молочная микропена (microfoam) служит природным теплоизолятором и механическим барьером, удерживающим пар.
+* **Точка выхода:** Пар не может просачиваться сквозь плотный слой белой пены или рисунок латте-арта. Выход пара происходит **точечно** — из открытых участков темной жидкой крема/эспрессо (разрывы в пене, темное окаймление латте-арта, свободная поверхность кофе у керамического ободка чашки).
+* **Формулировка в Positive Prompt:**
+  ```text
+  steam venting specifically from the exposed dark espresso crema gap beside the latte art, dense milk foam blocks vapor, localized steam plume from bare liquid spot
+  ```
+
+#### 3. Стоп-факторы парообразования (Negative Prompt):
+```text
+steam hovering over plastic lid, steam emitting from solid lid, diffuse steam cloud covering coffee cup, vapor passing through milk foam, uniform steam surface, floating fog above latte art, physically incorrect smoke
+```
+
+
 
