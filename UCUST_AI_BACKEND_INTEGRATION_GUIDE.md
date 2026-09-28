@@ -2158,3 +2158,210 @@ activated_instructions = registry.auto_activate_for_task(
 Модуль `Agent_FactChecker` (`CriticMungerSkill`) в реальном времени рассчитывает индекс **MPI**:
 * Сканирует текст на наличие триггеров: `reward_super_response`, `social_proof`, `pavlovian_association`, `deprival_fomo`, `risk_reversal_authority`.
 * Если в тексте одновременно задействовано $\ge 3$ триггера, активируется флаг `is_lollapalooza: True` со статусом `[🔥 LOLLAPALOOZA SYNERGY ACTIVE]`, а конверсионный скор получает дополнительный мультипликативный бонус (+0.10).
+
+---
+
+## 19. Пайплайн асинхронных уведомлений для Календаря, Банка Идей и Шлюза Согласования Акций
+
+Модуль `CalendarIdeaNotificationPipeline` (`ai/services/calendar_idea_notification_pipeline.py`) обеспечивает сквозную асинхронную доставку событий между ИИ-контуром и основным бэкендом (Java/Go/Node.js/Django) с криптографической подписью HMAC-SHA256 и экспоненциальным backoff при сбоях сети.
+
+---
+
+### 19.1. Заголовки вебхуков и верификация безопасности
+
+Каждый вебхук отправляется методом `POST` со следующими обязательными заголовками:
+
+| Заголовок | Описание | Пример значения |
+| :--- | :--- | :--- |
+| `Content-Type` | Формат полезной нагрузки | `application/json` |
+| `X-UCust-Event` | Тип бизнес-события | `calendar.grid_generated`, `promo.approval_required` |
+| `X-UCust-Signature` | HMAC-SHA256 подпись тела запроса | `sha256=a1b2c3d4e5f6...` |
+| `X-UCust-Tenant-Id` | Идентификатор арендатора / проекта | `dev`, `tenant_bakery_01` |
+| `X-UCust-Timestamp` | ISO 8601 время генерации события | `2026-09-28T17:00:00.000Z` |
+
+#### Формула проверки подписи на стороне Бэкенда:
+```python
+import hmac, hashlib
+
+def verify_ucust_signature(raw_body: bytes, header_signature: str, secret_key: str) -> bool:
+    expected = "sha256=" + hmac.new(secret_key.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, header_signature)
+```
+
+---
+
+### 19.2. Карта типов событий (Event Types Registry)
+
+```mermaid
+flowchart TD
+    subgraph Calendar & GPU Lifecycle
+        A1[Сетка на неделю: 0 GPU] -->|calendar.grid_generated| B[Бэкенд / Дашборд]
+        A2[Назначение в слот календаря] -->|calendar.slot_scheduled| B
+        A3[Приближение времени публикации] -->|render.lazy_queued| C[ComfyUI GPU Worker]
+        C -->|render.completed| B
+    end
+    
+    subgraph Idea Bank & Situational Radar
+        D1[Радар инфоповодов 21 день] -->|ideas.radar_synced| B
+        D2[Плейсхолдер подсказка по Tab] -->|ideas.placeholder_suggested| B
+        D3[Конфликт этапов воронки] -->|ideas.slot_conflict_warning| B
+    end
+
+    subgraph Promo Safety Gate (Hard-Lock)
+        E1[Детекция скидки / промокода] -->|promo.approval_required| F{Человек в контуре}
+        F -->|POST /api/v1/content/promo-decision| G[Шлюз ИИ]
+        G -->|promo.decision_recorded| B
+    end
+```
+
+---
+
+### 19.3. Структуры полезной нагрузки вебхуков (Payload Schemas)
+
+#### 1. `calendar.grid_generated` (Сетка контент-плана создана, 0 GPU)
+```json
+{
+  "event_type": "calendar.grid_generated",
+  "tenant_id": "tenant_bakery_01",
+  "task_id": "cal_grid_89fa12",
+  "status": "completed",
+  "timestamp": "2026-09-28T17:00:00Z",
+  "data": {
+    "project_id": "proj_bakery_01",
+    "days_count": 7,
+    "start_date": "2026-04-12",
+    "end_date": "2026-04-18",
+    "posts_count": 7,
+    "funnel_split": { "tofu": 0.4, "mofu": 0.4, "bofu": 0.2 },
+    "posts_summary": [
+      {
+        "post_id": "draft_01",
+        "date": "2026-04-12",
+        "topic": "Пасхальные куличи с цукатами",
+        "stage": "BOFU",
+        "format": "carousel",
+        "is_promo": true
+      }
+    ]
+  }
+}
+```
+
+#### 2. `render.lazy_queued` и `render.completed` (GPU Рендер изображений)
+```json
+{
+  "event_type": "render.completed",
+  "tenant_id": "tenant_bakery_01",
+  "task_id": "rnd_task_38df9",
+  "status": "ready",
+  "timestamp": "2026-09-28T17:05:00Z",
+  "data": {
+    "project_id": "proj_bakery_01",
+    "post_id": "draft_01",
+    "render_task_id": "rnd_task_38df9",
+    "rendered_image_urls": [
+      "https://cdn.ucust.com/media/proj_bakery_01/kulich_hero_4k.webp",
+      "https://cdn.ucust.com/media/proj_bakery_01/kulich_slice_macro.webp"
+    ],
+    "render_time_sec": 7.42,
+    "vram_peak_mb": 4200
+  }
+}
+```
+
+#### 3. `ideas.radar_synced` (Радар инфоповодов и трендов)
+```json
+{
+  "event_type": "ideas.radar_synced",
+  "tenant_id": "tenant_bakery_01",
+  "task_id": "radar_99812",
+  "status": "synced",
+  "timestamp": "2026-09-28T17:10:00Z",
+  "data": {
+    "niche": "пекарня",
+    "country": "россия",
+    "city": "Москва",
+    "horizon_days": 21,
+    "events_count": 3,
+    "upcoming_events": [
+      { "title": "Пасхальная неделя", "date": "2026-04-12", "relevance": 0.98, "angle": "Праздничный ассортимент куличей" },
+      { "title": "День весны и труда", "date": "2026-05-01", "relevance": 0.85, "angle": "Пикниковые наборы и свежий хлеб" }
+    ]
+  }
+}
+```
+
+#### 4. `promo.approval_required` (ЖЕСТКИЙ ШЛЮЗ: Акция требует аппрува человека)
+```json
+{
+  "event_type": "promo.approval_required",
+  "tenant_id": "tenant_bakery_01",
+  "task_id": "promo_req_draft_01",
+  "status": "pending_approval",
+  "timestamp": "2026-09-28T17:12:00Z",
+  "data": {
+    "project_id": "proj_bakery_01",
+    "post_id": "draft_01",
+    "product_name": "Пасхальный кулич Grand Cru",
+    "discount_text": "Скидка 15% по промокоду ПАСХА2026",
+    "promo_code": "ПАСХА2026",
+    "old_price": "1450 ₽",
+    "new_price": "1230 ₽",
+    "expires_at": "2026-04-12T23:59:59Z",
+    "margin_impact": "В пределах расчетной промо-маржи (22%)",
+    "post_preview_html": "<b>Пасхальный кулич Grand Cru</b><br>Специальная цена: <s>1450 ₽</s> <b>1230 ₽</b><br>Промокод: <code>ПАСХА2026</code>",
+    "approval_token": "appr_tok_8f93ab0192e4"
+  }
+}
+```
+
+---
+
+### 19.4. REST Эндпоинты управления шлюзом и банком идей
+
+#### `POST /api/v1/content/promo-decision`
+* **Назначение:** Отправка решения человека (Approve / Reject) по акции для разблокировки публикации.
+* **cURL:**
+```bash
+curl -X POST "http://localhost:8000/api/v1/content/promo-decision" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "project_id": "proj_bakery_01",
+    "post_id": "draft_01",
+    "decision": "approved",
+    "user_id": "owner_ivan",
+    "scheduled_publish_at": "2026-04-12T09:00:00Z",
+    "tenant_id": "tenant_bakery_01"
+  }'
+```
+
+#### `POST /api/v1/ideas/bank/sync-radar`
+* **Назначение:** Принудительный запуск сканирования календаря праздников и генерации инфоповодов.
+* **cURL:**
+```bash
+curl -X POST "http://localhost:8000/api/v1/ideas/bank/sync-radar" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "niche": "пекарня",
+    "country": "россия",
+    "city": "Москва",
+    "horizon_days": 21,
+    "tenant_id": "tenant_bakery_01"
+  }'
+```
+
+#### `POST /api/v1/ideas/bank/placeholder`
+* **Назначение:** Получение контекстной подсказки по Tab для интерфейса ввода идей.
+* **cURL:**
+```bash
+curl -X POST "http://localhost:8000/api/v1/ideas/bank/placeholder" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "niche": "пекарня",
+    "placeholder_text": "Пасхальные куличи с цукатами",
+    "suggested_topic": "Праздничная коллекция куличей",
+    "funnel_stage": "TOFU",
+    "tenant_id": "tenant_bakery_01"
+  }'
+```
+

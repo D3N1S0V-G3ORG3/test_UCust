@@ -38,6 +38,11 @@ from schemas.project_onboarding import (
     ProjectProfileDraft, ProjectAnalyzeRequest, ProjectAnalyzeResponse,
     ProjectCommitRequest, ProjectCommitResponse
 )
+try:
+    from services.calendar_idea_notification_pipeline import CalendarIdeaNotificationPipeline
+except ImportError:
+    from ai.services.calendar_idea_notification_pipeline import CalendarIdeaNotificationPipeline
+
 
 # -------------------------------------------------------------------
 # 1. Pydantic Модели запросов и ответов (API Contract v2.5.0)
@@ -1727,6 +1732,117 @@ async def get_post_lifecycle_status(post_id: str):
     if not post:
         raise HTTPException(status_code=404, detail=f"Пост {post_id} не найден в базе черновиков.")
     return post.dict()
+
+
+# -------------------------------------------------------------------
+# Endpoints: Calendar, Idea Bank & Promo Safety Notification Pipeline
+# -------------------------------------------------------------------
+
+class PromoDecisionApiRequest(BaseModel):
+    project_id: str = Field(..., example="proj_bakery_01")
+    post_id: str = Field(..., example="post_kulich_promo_01")
+    decision: str = Field(..., example="approved", description="approved | rejected | modified")
+    user_id: str = Field("user_owner", example="usr_admin")
+    scheduled_publish_at: Optional[str] = Field(None, example="2026-04-12T09:00:00Z")
+    tenant_id: str = Field("dev", example="tenant_main")
+    callback_url: Optional[str] = None
+
+
+class SyncRadarApiRequest(BaseModel):
+    niche: str = Field(..., example="пекарня")
+    country: str = Field("россия", example="россия")
+    city: str = Field("Москва", example="Москва")
+    horizon_days: int = Field(21, example=21)
+    upcoming_events: List[Dict[str, Any]] = Field(default_factory=list)
+    tenant_id: str = Field("dev", example="tenant_main")
+    callback_url: Optional[str] = None
+
+
+class PlaceholderSuggestApiRequest(BaseModel):
+    niche: str = Field(..., example="пекарня")
+    placeholder_text: str = Field(..., example="Пасхальные куличи с цукатами")
+    suggested_topic: str = Field(..., example="Праздничная коллекция куличей")
+    funnel_stage: str = Field("TOFU", example="TOFU")
+    tenant_id: str = Field("dev", example="tenant_main")
+    callback_url: Optional[str] = None
+
+
+@app.post("/api/v1/content/promo-decision", tags=["Content Strategy & Lazy Rendering"])
+async def record_promo_decision(payload: PromoDecisionApiRequest):
+    """
+    Прием решения пользователя по акции (Human-in-the-Loop Promo Hard-Gate).
+    Отправляет подтверждение через webhook-пайплайн.
+    """
+    success = await CalendarIdeaNotificationPipeline.emit_promo_decision(
+        project_id=payload.project_id,
+        post_id=payload.post_id,
+        decision=payload.decision,
+        user_id=payload.user_id,
+        scheduled_publish_at=payload.scheduled_publish_at,
+        tenant_id=payload.tenant_id,
+        callback_url=payload.callback_url
+    )
+    return {
+        "status": "success" if success else "warning",
+        "post_id": payload.post_id,
+        "decision": payload.decision,
+        "webhook_dispatched": success,
+        "message": f"Решение '{payload.decision}' по промо-посту {payload.post_id} зафиксировано."
+    }
+
+
+@app.post("/api/v1/ideas/bank/sync-radar", tags=["Idea Bank & Situational Radar"])
+async def sync_idea_radar(payload: SyncRadarApiRequest):
+    """
+    Синхронизация радара инфоповодов и отправка вебхука с праздниками/событиями на 21 день.
+    """
+    events = payload.upcoming_events
+    if not events:
+        # Автоматическая генерация базовых инфоповодов для ниши
+        events = [
+            {"title": "Пасхальная неделя", "date": "2026-04-12", "relevance": 0.98, "angle": "Праздничный ассортимент куличей"},
+            {"title": "День весны и труда", "date": "2026-05-01", "relevance": "0.85", "angle": "Пикниковые наборы и выпечка"},
+            {"title": "День кондитера", "date": "2026-05-03", "relevance": 0.90, "angle": "Закулисье пекарни и мастерство шефа"}
+        ]
+    
+    success = await CalendarIdeaNotificationPipeline.emit_idea_radar_synced(
+        niche=payload.niche,
+        upcoming_events=events,
+        country=payload.country,
+        city=payload.city,
+        horizon_days=payload.horizon_days,
+        tenant_id=payload.tenant_id,
+        callback_url=payload.callback_url
+    )
+    return {
+        "status": "success",
+        "events_count": len(events),
+        "events": events,
+        "webhook_dispatched": success
+    }
+
+
+@app.post("/api/v1/ideas/bank/placeholder", tags=["Idea Bank & Situational Radar"])
+async def suggest_tab_placeholder(payload: PlaceholderSuggestApiRequest):
+    """
+    Генерация и рассылка актуального Tab-плейсхолдера для поля ввода идей.
+    """
+    success = await CalendarIdeaNotificationPipeline.emit_tab_placeholder_suggested(
+        niche=payload.niche,
+        placeholder_text=payload.placeholder_text,
+        suggested_topic=payload.suggested_topic,
+        funnel_stage=payload.funnel_stage,
+        tenant_id=payload.tenant_id,
+        callback_url=payload.callback_url
+    )
+    return {
+        "status": "success",
+        "placeholder_text": payload.placeholder_text,
+        "suggested_topic": payload.suggested_topic,
+        "funnel_stage": payload.funnel_stage,
+        "webhook_dispatched": success
+    }
+
 
 
 if __name__ == "__main__":

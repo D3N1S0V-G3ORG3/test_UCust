@@ -9,15 +9,21 @@ CRUD операции и семантический поиск по tenant_id с
 from __future__ import annotations
 
 import uuid
-import asyncio
-import numpy as np
+try:
+    import numpy as np
+except ImportError:
+    np = None
 from typing import List, Dict, Any, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from rag.pipeline import CleanRAGPipeline
 
-from sqlalchemy.future import select
-from sqlalchemy import text
+try:
+    from sqlalchemy.future import select
+    from sqlalchemy import text
+except (ImportError, Exception):
+    select = None
+    text = lambda x: x
 
 try:
     from core.database import AsyncSessionLocal, IS_POSTGRES
