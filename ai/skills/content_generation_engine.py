@@ -14,6 +14,7 @@ from typing import Dict, Any, List, Optional
 from prompts.telegram_generation_prompt import TELEGRAM_EXPERT_PROMPT
 from skills.rag_retriever_skill import CleanRAGRetrieverSkill
 from skills.audit_deduplication_agent import AuditDeduplicationAgent
+from skills.fact_checking_critic import FactCheckingCritic
 from core.lazy_rendering_controller import (
     PostDraft, PostLifecycleStatus, ContentFormat, ImageGenerationSpec, SubscriptionTier, IndustryArchetype
 )
@@ -25,9 +26,10 @@ class ContentGenerationEngine:
     """
     Сквозной конвейер генерации постов:
     1. Семантический аудит и защита от повторов (Pre-Mortem Audit, threshold=0.82).
-    2. Извлечение фактов из RAG с изоляцией по project_id.
-    3. Генерация текста в Saiga LLM с поддержкой разметки Telegram 7.2+.
-    4. Сборка спецификации для отложенного рендера ComfyUI (0 GPU cost на этапе черновика).
+    2. Извлечение фактов из RAG с автоматическим Grounding-фоллбэком при UNKNOWN_ENTITY.
+    3. Генерация текста в Saiga LLM с поддержкой разметки Telegram 7.2+ и Closed-Domain Grounding.
+    4. Факт-чекинг критик и автокоррекция галлюцинаций (FactCheckingCritic).
+    5. Сборка спецификации для отложенного рендера ComfyUI (0 GPU cost на этапе черновика).
     """
 
     def __init__(self, dev_mode: bool = True):
@@ -84,8 +86,13 @@ class ContentGenerationEngine:
                 actual_topic = verdict.suggested_shifted_angle or topic
                 logger.info(f"🔄 [Deduplication] Обнаружен повтор темы. Смещение угла: '{actual_topic}'")
 
-        # 2. Извлечение релевантных фактов из RAG (Clean RAG Pipeline с реранкингом)
-        rag_facts = await CleanRAGRetrieverSkill.retrieve_and_rerank(project_id=project_id, query=actual_topic, top_k=3)
+        # 2. Извлечение фактов: RAG + Автономный ресёрч при неизвестных сущностях
+        rag_facts, fact_sheet = await CleanRAGRetrieverSkill.retrieve_with_grounding_fallback(
+            project_id=project_id,
+            query=actual_topic,
+            niche=niche,
+            top_k=3
+        )
         if rag_facts:
             rag_context = "\n".join([f"- {fact}" for fact in rag_facts])
         else:
@@ -98,6 +105,13 @@ class ContentGenerationEngine:
             content_goal=content_goal,
             rag_context=rag_context
         )
+
+        if fact_sheet and fact_sheet.is_grounded:
+            system_msg += (
+                f"\n\nСТАНДАРТ ЖЕСТКОГО ФАКТИЧЕСКОГО ЯКОРЕНИЯ:\n"
+                f"{fact_sheet.to_prompt_block()}\n"
+                "Правило: не выдумывай несуществующие цифры и технологии, отсутствующие в списке выше."
+            )
 
         user_msg = f"Напиши публикацию для Telegram-канала компании '{company_name}' на тему: {actual_topic}"
 
@@ -126,6 +140,13 @@ class ContentGenerationEngine:
                 f"Каждый день мы совершенствуем процессы, чтобы вы получали безупречный результат.\n\n"
                 f"👉 Подробнее по ссылке в описании профиля или напишите нам в личные сообщения."
             )
+
+        # 4.1. Арбитражная проверка фактов и автокоррекция (FactCheckingCritic)
+        critic_report = FactCheckingCritic.validate_and_autocorrect(
+            text=post_text,
+            fact_sheet=fact_sheet
+        )
+        post_text = critic_report.sanitized_text
 
         # 5. Сборка спецификации для отложенного ComfyUI рендера (Lazy Rendering)
         visual_prompt = (

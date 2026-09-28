@@ -31,6 +31,10 @@ class FactSheet(BaseModel):
     sources: List[str] = Field(default=[], description="URL-источники фактов")
     is_verified: bool = Field(True, description="Флаг наличия подтвержденных фактов")
 
+    @property
+    def is_grounded(self) -> bool:
+        return self.is_verified
+
     def to_prompt_block(self) -> str:
         """
         Формирует защищенный блок [FACT_SHEET] для системного промпта SaigaLLM.
