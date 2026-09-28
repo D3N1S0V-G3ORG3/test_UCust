@@ -15,6 +15,12 @@ import re
 from typing import Dict, Any, List, Optional
 from skills.context_router import RoutingDirective, QuadrantEnum, FunnelLockEnum
 
+try:
+    from skills.marketing_frameworks import NicheClusterResolver, NicheCluster, NICHE_CONSTRAINTS
+except ImportError:
+    from ai.skills.marketing_frameworks import NicheClusterResolver, NicheCluster, NICHE_CONSTRAINTS
+
+
 class CriticMungerSkill:
     STOP_CLICHES = [
         'динамично развивающаяся', 'команда профессионалов', 'индивидуальный подход',
@@ -46,8 +52,10 @@ class CriticMungerSkill:
         text: str,
         topic: str = '',
         target_audience: str = '',
-        routing: Optional[RoutingDirective] = None
+        routing: Optional[RoutingDirective] = None,
+        niche: str = ''
     ) -> Dict[str, Any]:
+
         if not text or len(text.strip()) < 20:
             return {
                 'passed': False, 'score': 0.2, 'verdict': 'REJECT',
@@ -212,19 +220,67 @@ class CriticMungerSkill:
         else:
             audit_breakdown['lollapalooza_synergy'] = False
 
+        # 8. CONTEXT-AWARE NICHE CLUSTER AUDIT
+        cluster_enum, cluster_spec = NicheClusterResolver.resolve_cluster(niche or target_audience or topic)
+        
+        # B2B & Industrial: Требование точных цифр, SLA и окупаемости (Zero-Water)
+        if cluster_enum == NicheCluster.B2B_INDUSTRIAL:
+            has_digits = bool(re.search(r'\d+', text_clean))
+            if not has_digits:
+                score -= 0.25
+                fatal_flaws.append("B2B Zero-Metrics: Текст не содержит точных цифр, метрик окупаемости (ROI), часов экономии или SLA.")
+                audit_breakdown['b2b_metrics'] = False
+            else:
+                audit_breakdown['b2b_metrics'] = True
+
+        # EdTech & Education: Требование бесплатной пользы / разбора ошибки перед продажей
+        elif cluster_enum == NicheCluster.EDTECH_EDUCATION:
+            has_value = any(w in text_lower for w in ["ошибк", "разбор", "шаблон", "правил", "совет", "лайфхак", "чек-лист", "алгоритм", "гайд", "практик"])
+            if not has_value:
+                score -= 0.20
+                cautions.append("EdTech Reciprocity: Текст переходит к продаже курса без предварительной ценности или разбора ошибки.")
+                audit_breakdown['edtech_reciprocity'] = False
+            else:
+                audit_breakdown['edtech_reciprocity'] = True
+
+        # Local SMB: Сенсорика и четкий локальный дефицит
+        elif cluster_enum == NicheCluster.LOCAL_SERVICES_SMB:
+            has_sensory = any(w in text_lower for w in ["вкус", "хруст", "запах", "блеск", "аромат", "свеж", "мякиш", "корочк", "температур", "оттенок", "мастер"])
+            if not has_sensory:
+                score -= 0.15
+                cautions.append("SMB Sensory Gap: Недостаточно тактильных и сенсорных дескрипторов продукта/услуги.")
+                audit_breakdown['smb_sensory'] = False
+            else:
+                audit_breakdown['smb_sensory'] = True
+
+        # Freelance Experts: Продажа конечного состояния вместо процесса
+        elif cluster_enum == NicheCluster.FREELANCE_EXPERTS:
+            has_outcome = any(w in text_lower for w in ["спокойн", "уверенност", "выручк", "доход", "сон", "свобод", "результат", "клиент"])
+            if not has_outcome:
+                score -= 0.15
+                cautions.append("Freelance Outcome Gap: Описан процесс работы, а не конечное желанное состояние клиента.")
+                audit_breakdown['freelance_outcome'] = False
+            else:
+                audit_breakdown['freelance_outcome'] = True
+
         score = max(0.1, min(1.0, round(score, 2)))
         passed = score >= self.strictness
 
         if passed:
             verdict = 'APPROVED'
             synergy_msg = " [🔥 LOLLAPALOOZA SYNERGY ACTIVE]" if is_lollapalooza else ""
-            criticism = f'Текст полностью прошел аудит качества: сильный хук, чистота лексики квадранта, отсутствие оксюморонов и выдержанный ритм.{synergy_msg}'
+            criticism = f'Текст полностью прошел аудит качества для кластера [{cluster_spec["cluster_name"]}]: сильный хук, чистота лексики, фактурные детали и выдержанный ритм.{synergy_msg}'
             actionable_feedback = 'Готово к публикации.'
         else:
             verdict = 'REVISE_NEEDED'
             reasons = fatal_flaws + cautions
-            criticism = f'Текст требует доработки: {reasons[:2]}'
+            criticism = f'Текст требует доработки ({cluster_spec["cluster_name"]}): {reasons[:2]}'
             feedback_parts = []
+            
+            # Добавление специализированного правила критики кластера
+            if cluster_spec.get("critic_actionable_rule"):
+                feedback_parts.append(cluster_spec["critic_actionable_rule"])
+                
             if not audit_breakdown.get('lexicon_gatekeeper', True):
                 feedback_parts.append('Удалите несоответствующий B2B-жаргон (KPI, ROI, оптимизация бюджета) из лайфстайл-поста.')
             if not audit_breakdown.get('semantic_bleed', True):
@@ -239,6 +295,8 @@ class CriticMungerSkill:
             'passed': passed,
             'score': score,
             'verdict': verdict,
+            'niche_cluster': cluster_enum.value,
+            'cluster_name': cluster_spec["cluster_name"],
             'criticism': criticism,
             'actionable_feedback': actionable_feedback,
             'fatal_flaws': fatal_flaws,
@@ -250,3 +308,4 @@ class CriticMungerSkill:
                 'is_lollapalooza': is_lollapalooza
             }
         }
+

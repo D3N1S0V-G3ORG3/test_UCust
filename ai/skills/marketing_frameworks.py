@@ -55,6 +55,111 @@ class ValueLadderTier(str, Enum):
     PROFIT_MAXIMIZER = "profit_maximizer"  # VIP / Апсейл: абонемент, годовая гарантия, расширенный пакет
 
 
+class NicheCluster(str, Enum):
+    B2B_INDUSTRIAL = "b2b_industrial"          # B2B, IT, SaaS, Логистика, Оборудование, Производство
+    EDTECH_EDUCATION = "edtech_education"      # EdTech, Курсы, Инфобизнес, Обучение, Менторство
+    LOCAL_SERVICES_SMB = "local_services_smb"  # Малый бизнес, Общепит, Бьюти, СТО, Детейлинг, Ритейл
+    FREELANCE_EXPERTS = "freelance_experts"    # Фрилансеры, Маркетологи, Психологи, Коучи, Эксперты
+    LIFESTYLE_CONSUMER = "lifestyle_consumer"  # Общий B2C / Лайфстайл
+
+
+# ============================================================================
+# NICHE CONSTRAINTS DICTIONARY (КОНТЕКСТНАЯ МАРШРУТИЗАЦИЯ И ОГРАНИЧЕНИЯ)
+# ============================================================================
+
+NICHE_CONSTRAINTS: Dict[NicheCluster, Dict[str, Any]] = {
+    NicheCluster.B2B_INDUSTRIAL: {
+        "cluster_name": "B2B-сектор и Промышленность (IT, Логистика, Оборудование)",
+        "keywords": [
+            "it", "saas", "b2b", "логистик", "оборудован", "промышленност", "производств",
+            "консалтинг", "бухгалтер", "юриспруденц", "склад", "инжиниринг", "транспорт",
+            "автоматизац", "сервер", "безопасност", "поставка", "опт", "интеграци"
+        ],
+        "style_doctrine": "Сухой скальпель. Лаконичность, инженерная точность, фактура. Никаких превосходных прилагательных и детских аналогий.",
+        "emoji_rule": "Эмодзи отключены либо используются строго нейтральные геометрические маркеры (🔹, ▪️) — не более 1-2 на пост.",
+        "sensory_rule": "ПРАВИЛО ROI И МЕТРИК: Сенсорика превращается в точные цифры, SLA и окупаемость. Вместо «удобный сервис» пиши «экономит 14 часов бухгалтера в месяц», «снижение простоя оборудования на 28%», «доставка за 48 часов по договору».",
+        "munger_focus": "Снятие рисков (Doubt-Avoidance & Authority): B2B покупает безопасность. Обязательно опирайся на гарантии по договору, сертификаты, фиксированные сметы и реальные кейсы.",
+        "priority_trigger": PsychologicalTrigger.RISK_REVERSAL,
+        "cliches_to_kill": [
+            "динамично развивающаяся", "команда профессионалов", "индивидуальный подход",
+            "лучшее качество", "волшебный", "бомбический", "надежный партнер", "широкий спектр"
+        ],
+        "critic_actionable_rule": "Если Мангер видит воду и общие фразы вроде «надежный партнер», он требует: «Убери воду. Напиши точные цифры: экономию в рублях/часах, SLA, размер автопарка или среднее время обработки заявки»."
+    },
+    NicheCluster.EDTECH_EDUCATION: {
+        "cluster_name": "EdTech, Инфобизнес и Образование",
+        "keywords": [
+            "образован", "курс", "edtech", "школ", "инфобизнес", "обучен", "вебинар",
+            "марафон", "ментор", "английск", "программирован", "дизайн", "професси",
+            "репетитор", "мастер-класс", "стажировк", "вебинар"
+        ],
+        "style_doctrine": "Разговорный, эмпатичный, динамичный. Фокус на Pain Amplification (амплификация скрытой боли) и трансформации статуса «до/после».",
+        "emoji_rule": "Функциональные смысловые акценты (🧠, 📊, ⚡️, 🎯) — 2-3 на пост для управления вниманием.",
+        "hook_rule": "ХУК В СКРЫТЫЙ СТРАХ: Бей прямо в барьер или стереотип аудитории. Никаких «Хотите освоить IT?». Пиши: «В 2026 году джуниор-разработчику без реального портфолио отказывают в 94% случаев».",
+        "sensory_rule": "ТРАНСФОРМАЦИЯ НАВЫКА: Показывай осязаемые артефакты (строчки чистого кода, принятый оффер, дипломный проект в портфолио, первая зарплата).",
+        "munger_focus": "Взаимный обмен (Reciprocation): Текст ОБЯЗАН давать безусловную бесплатную пользу (пошаговый алгоритм, разбор частой ошибки, готовый шаблон) строго ДО перехода к продаже курса.",
+        "priority_trigger": PsychologicalTrigger.RECIPROCITY,
+        "cliches_to_kill": [
+            "уникальная методика", "успешный успех", "легкий заработок", "курс изменит вашу жизнь",
+            "гарантированный доход", "без усилий"
+        ],
+        "critic_actionable_rule": "Критик следит, чтобы польза и инсайт шли ПЕРЕД продажей. Запрещены обещания легких денег без прозрачной учебной программы."
+    },
+    NicheCluster.LOCAL_SERVICES_SMB: {
+        "cluster_name": "Малый бизнес и Локальные услуги (Общепит, Бьюти, СТО, Ритейл)",
+        "keywords": [
+            "пекарн", "кофейн", "общепит", "ресторан", "бьют", "салон красот", "барбершоп",
+            "сто", "автосервис", "детейлинг", "клининг", "мебель", "цвет", "фитнес",
+            "стоматолог", "кафе", "кулич", "выпечк", "маникюр", "шиномонтаж", "мойка", "ремонт"
+        ],
+        "style_doctrine": "Гиперлокальный, плотный, сочный, кинематографичный. Атмосфера соседского доверия и мгновенного импульса.",
+        "emoji_rule": "Аппетитные и предметные иконки (☕️, 🥐, ✂️, 🚗, ✨) — до 2-3 штук как структурные якоря.",
+        "sensory_rule": "ФИЗИЧЕСКАЯ СЕНСОРИКА: Клиент должен «почувствовать» хруст корочки, запах смолотого кофе, матовый блеск полированного кузова или легкость в плечах после массажа.",
+        "munger_focus": "Эффект Lollapalooza (Социальное доказательство + Дефицит окон/порций): Импульсивное решение на стыке доверия соседей и ограниченного запаса («осталось 3 порции / 2 свободных окна на вечер»).",
+        "priority_trigger": PsychologicalTrigger.LOLLAPALOOZA,
+        "cta_rule": "ИМПЕРАТИВНЫЙ ЛОКАЛЬНЫЙ СТА: Вместо унылого «Ждем вас в салоне» пиши «Забери последнее окно на сложную покраску сегодня в 19:30. Ссылка для брони ниже».",
+        "cliches_to_kill": [
+            "с любовью для вас", "уютная атмосфера", "приятные цены", "широкий ассортимент",
+            "высокое качество", "самое лучшее"
+        ],
+        "critic_actionable_rule": "Критик бракует абстрактные восторги и требует осязаемых деталей: рецептуру, температуру, остаток мест, время выдержки теста или номер оттенка."
+    },
+    NicheCluster.FREELANCE_EXPERTS: {
+        "cluster_name": "Фрилансеры и Помогающие практики (Эксперты, Маркетологи, Коучи)",
+        "keywords": [
+            "маркетолог", "психолог", "коуч", "таргетолог", "копирайтер", "фриланс",
+            "самопиар", "консультант", "нутрициолог", "астролог", "таролог", "эксперт",
+            "менторств", "smm", "стратег", "продюсер", "личный бренд", "юрист", "частный"
+        ],
+        "style_doctrine": "Сторителлинг от первого лица («Я-позиция», бесшовно переходящая в «Вы-результат»). Живой человеческий диалог без высокомерия.",
+        "emoji_rule": "Минималистичные акценты (💡, ⚡️, 📌) — 1-2 на пост.",
+        "rhythm_rule": "РВАНЫЙ РИТМ ИЛЬЯХОВА: Обязательное чередование коротких предложений-ударов и развернутых мыслей для эффекта живого разговора тет-а-тет.",
+        "sensory_rule": "РЕЗУЛЬТАТ ВМЕСТО ПРОЦЕССА: Не описывай часы работы или сложный алгоритм — покажи конечное состояние клиента (спокойный сон, уверенность на переговорах, рост выручки в 2 раза).",
+        "munger_focus": "Павловские ассоциации (Pavlovian Association): Связывай работу с экспертом с чувством защищенности, легкости и признания.",
+        "priority_trigger": PsychologicalTrigger.PAVLOVIAN_ASSOCIATION,
+        "cliches_to_kill": [
+            "помогу выйти на новый уровень", "раскрою ваш потенциал", "проработка установок",
+            "индивидуальная сессия", "лучший специалист"
+        ],
+        "critic_actionable_rule": "Критик следит, чтобы эксперт не хвалил себя, а раскрывал решение конкретной боли через личный кейс или факап с понятным выводом."
+    }
+}
+
+
+class NicheClusterResolver:
+    """Резолвер кластеров ниш для контекстной маршрутизации."""
+
+    @classmethod
+    def resolve_cluster(cls, niche: str) -> Tuple[NicheCluster, Dict[str, Any]]:
+        niche_lower = (niche or "").lower().strip()
+        for cluster_enum, spec in NICHE_CONSTRAINTS.items():
+            keywords = spec.get("keywords", [])
+            if any(kw in niche_lower for kw in keywords):
+                return cluster_enum, spec
+        return NicheCluster.LOCAL_SERVICES_SMB, NICHE_CONSTRAINTS[NicheCluster.LOCAL_SERVICES_SMB]
+
+
+
 # ============================================================================
 # 1. JTBD (JOBS-TO-BE-DONE) ENGINE
 # ============================================================================
@@ -354,26 +459,45 @@ class MarketingFrameworkDirector:
         - Продуктовой воронки Value Ladder
         - Fogg Model Low-Friction CTA
         """
+        # 1. Разрешение кластера ниши для контекстной маршрутизации
+        cluster_enum, cluster_spec = NicheClusterResolver.resolve_cluster(niche)
+        effective_trigger = trigger or cluster_spec.get("priority_trigger", PsychologicalTrigger.SOCIAL_PROOF)
+
         fw_info = cls.FRAMEWORK_DESCRIPTIONS.get(framework, cls.FRAMEWORK_DESCRIPTIONS[MarketingFramework.AIDA])
         stage_strategy = cls.HUNT_STAGE_STRATEGIES.get(hunt_stage, cls.HUNT_STAGE_STRATEGIES[HuntStage.STAGE_2_PROBLEM_AWARE])
-        trigger_text = cls.TRIGGER_TEMPLATES.get(trigger, "").format(client_count="1 200+", rating="4.9", slots_count="3", cashback="15")
+        trigger_text = cls.TRIGGER_TEMPLATES.get(effective_trigger, "").format(client_count="1 200+", rating="4.9", slots_count="3", cashback="15")
         
-        # 1. JTBD трансформация
+        # 2. JTBD трансформация
         jtbd = JTBDTransformer.transform_feature(niche, raw_feature)
         
-        # 2. Value Ladder уровень
+        # 3. Value Ladder уровень
         value_ladder = ValueLadderArchitect.get_ladder_for_niche(niche)
         tier = stage_strategy.get("value_tier", ValueLadderTier.CORE_OFFER)
         tier_offer = value_ladder.get(tier, "Основное предложение")
 
-        # 3. Fogg Low-Friction CTA
+        # 4. Fogg Low-Friction CTA
         low_friction_cta = FoggCTAGenerator.generate_low_friction_cta(
             action_type="direct_keyword",
-            keyword="РАСЧЕТ" if "мебель" in niche.lower() else "КОНСУЛЬТАЦИЯ",
+            keyword="РАСЧЕТ" if any(w in niche.lower() for w in ["мебель", "ремонт", "стройка", "кухн"]) else "КОНСУЛЬТАЦИЯ",
             company_name=company_name
         )
 
         pains_str = ", ".join(pain_points) if pain_points else "страх переплаты и сомнения в качестве"
+
+        cluster_rules = (
+            f"\n8. КОНТЕКСТНЫЕ ОГРАНИЧЕНИЯ КЛАСТЕРА [{cluster_spec['cluster_name'].upper()}]:\n"
+            f"   • Стиль: {cluster_spec['style_doctrine']}\n"
+            f"   • Сенсорика/ROI: {cluster_spec['sensory_rule']}\n"
+            f"   • Эмодзи: {cluster_spec['emoji_rule']}\n"
+            f"   • Мангер-фокус: {cluster_spec['munger_focus']}\n"
+            f"   • Запрещенные штампы кластера: {', '.join(cluster_spec['cliches_to_kill'])}\n"
+        )
+        if "hook_rule" in cluster_spec:
+            cluster_rules += f"   • Правило хука: {cluster_spec['hook_rule']}\n"
+        if "cta_rule" in cluster_spec:
+            cluster_rules += f"   • Правило CTA: {cluster_spec['cta_rule']}\n"
+        if "rhythm_rule" in cluster_spec:
+            cluster_rules += f"   • Правило ритма: {cluster_spec['rhythm_rule']}\n"
 
         prompt_instructions = (
             f"=== СТРОГАЯ МАРКЕТИНГОВАЯ ДИРЕКТИВА ДЛЯ ТЕКСТА ===\n"
@@ -387,19 +511,24 @@ class MarketingFrameworkDirector:
             f"   {trigger_text}\n"
             f"6. Низкофрикционный призыв к действию (Fogg Model B=MAP):\n"
             f"   {low_friction_cta}\n"
-            f"7. Тональность: Живая, дружелюбная, без шаблонных фраз («В современном мире», «Не упустите шанс»)."
+            f"7. Тональность: Живая, без абстракций и шаблонных фраз («В современном мире», «Не упустите шанс»).\n"
+            f"{cluster_rules}"
         )
 
         return {
+            "niche_cluster": cluster_enum.value,
+            "cluster_spec": cluster_spec,
             "framework": framework.value,
             "hunt_stage": hunt_stage.value,
-            "psychological_trigger": trigger.value,
+            "psychological_trigger": effective_trigger.value,
             "value_ladder_tier": tier.value,
             "jtbd": jtbd,
             "fogg_cta": low_friction_cta,
             "trigger_prompt": trigger_text,
-            "full_marketing_prompt": prompt_instructions
+            "full_marketing_prompt": prompt_instructions,
+            "critic_actionable_rule": cluster_spec.get("critic_actionable_rule", "")
         }
+
 
     @classmethod
     def generate_post_with_framework(

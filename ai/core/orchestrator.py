@@ -1616,7 +1616,7 @@ class UnifiedOrchestrator:
                     p_text = saiga.self_heal_text(p_text, error_msg or "", routing=routing_directive)
                     
                 critic = CriticMungerSkill(strictness=0.80)
-                critic_res = critic.review_content(p_text, topic=prompt, target_audience=niche, routing=routing_directive)
+                critic_res = critic.review_content(p_text, topic=prompt, target_audience=niche, routing=routing_directive, niche=niche)
                 
                 MAX_HEALING_RETRIES = 2
                 healing_attempts = 0
@@ -1627,7 +1627,8 @@ class UnifiedOrchestrator:
                     is_valid, error_msg = SecurityGuard.validate_content_tone_of_voice(p_text, custom_forbidden_words=custom_forb)
                     if not is_valid:
                         p_text = saiga.self_heal_text(p_text, error_msg or "", routing=routing_directive)
-                    critic_res = critic.review_content(p_text, topic=prompt, target_audience=niche, routing=routing_directive)
+                    critic_res = critic.review_content(p_text, topic=prompt, target_audience=niche, routing=routing_directive, niche=niche)
+
 
 
                 t_text_duration = round(max(0.05, time.time() - t_text_start), 2)
