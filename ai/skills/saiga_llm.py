@@ -4,10 +4,13 @@ import re
 import json
 import time
 import random
+import logging
 import threading
 from typing import Any, Dict, List, Optional, Union
 from skills.competitor_hashtags import NicheCompetitorHashtagEngine
 from skills.political_legal_guard import PoliticalAndLegalGuard
+
+logger = logging.getLogger("saiga_llm")
 
 try:
     from core.internal_calendar import InternalCalendarEngine

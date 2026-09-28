@@ -965,7 +965,12 @@ class ComfyCLIRunner:
                             await asyncio.sleep(2.0)
                             if (poll_idx + 1) % 5 == 0:
                                 print(f"[PhotoGeneratorSkill] ⏳ ComfyUI диффузия выполняется (прошло {(poll_idx + 1) * 2} сек)...")
-                            hist_res = await client.get(f"{self.comfyui_url}/history/{prompt_id}")
+                            try:
+                                hist_res = await client.get(f"{self.comfyui_url}/history/{prompt_id}", timeout=10.0)
+                            except Exception as hist_err:
+                                logger.debug("Transient error polling ComfyUI history (will retry): %s", hist_err)
+                                continue
+
                             if hist_res.is_success:
                                 history = hist_res.json().get(prompt_id, {})
                                 status_info = history.get("status", {})
@@ -991,7 +996,7 @@ class ComfyCLIRunner:
                                                         params["subfolder"] = subfolder
                                                     if img_type:
                                                         params["type"] = img_type
-                                                    img_resp = await client.get(f"{self.comfyui_url}/view", params=params)
+                                                    img_resp = await client.get(f"{self.comfyui_url}/view", params=params, timeout=30.0)
                                                     if img_resp.is_success and len(img_resp.content) > 1000:
                                                         with open(dest_path, "wb") as f:
                                                             f.write(img_resp.content)
