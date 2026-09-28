@@ -1640,5 +1640,114 @@ bright pink blush, intense rosy cheeks, sunburn, clown makeup, painted blush, ro
 steam hovering over plastic lid, steam emitting from solid lid, diffuse steam cloud covering coffee cup, vapor passing through milk foam, uniform steam surface, floating fog above latte art, physically incorrect smoke
 ```
 
+---
+
+## 11. Архитектура стриминга промежуточных статусов (SSE / Progress Streaming) и Observability антигаллюцинаторного конвейера
+
+Поскольку сквозной цикл (семантический поиск $\rightarrow$ веб-ресёрч $\rightarrow$ дистилляция в `FactSheet` $\rightarrow$ генерация $\rightarrow$ факт-чекинг критик) может занимать от 2 до 6 секунд, архитектура бэкенда предусматривает **пошаговую трансляцию жизненного цикла на фронтенд в реальном времени (UX-паттерн Linear / Stripe)** через Server-Sent Events (SSE) или WebSockets.
+
+---
+
+### 11.1. Матрица этапов и промежуточных событий генерации
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client as Frontend (UI / React)
+    participant Gateway as FastAPI (SSE Stream)
+    participant Core as Active Grounding Pipeline
+
+    Client->>Gateway: GET /api/v1/content/generate/stream?topic=...
+    Gateway-->>Client: event: progress (10%) «🔍 Поиск во внутренней базе знаний бренда...»
+    Core->>Core: CleanRAG pgvector check
+    alt Локальных данных недостаточно (similarity < 0.65)
+        Gateway-->>Client: event: progress (35%) «🌐 Сканирую внешние источники и официальные ТТХ...»
+        Core->>Core: TravitySearch + LLM Fact Distillation
+        Gateway-->>Client: event: progress (60%) «📋 Паспорт продукта сформирован (ТТХ верифицированы)...»
+    end
+    Gateway-->>Client: event: progress (80%) «✍️ Генерация публикации с жестким факт-якорением...»
+    Core->>Core: SaigaLLM Generation
+    Gateway-->>Client: event: progress (95%) «🛡️ Факт-чекинг критик: сверка цифр и свойств...»
+    Core->>Core: FactCheckingCritic Validation & Auto-Correction
+    Gateway-->>Client: event: complete (100%) [JSON PostDraft Payload]
+```
+
+#### Таблица событий стриминга:
+
+| Шаг | Код события (`event`) | Прогресс | UX-статус для пользователя | Что происходит под капотом |
+| :- | :--- | :---: | :--- | :--- |
+| **1** | `rag_lookup` | `10%` | *«🔍 Ищу информацию в базе знаний компании...»* | Поиск эмбеддингов в pgvector тенанта (`CleanRAG`). |
+| **2** | `web_research` | `35%` | *«🌐 Анализирую спецификацию и данные о продукте в сети...»* | Триггер `UNKNOWN_ENTITY` $\rightarrow$ запуск `TravitySearchSkill`. |
+| **3** | `fact_distilled` | `60%` | *«📋 Формирую паспорт проверенных характеристик...»* | Сепарация ТТХ от эпитетов в модель `FactSheet`. |
+| **4** | `llm_generating` | `80%` | *«✍️ Создаю публикацию в вашем Tone of Voice...»* | Генерация в SaigaLLM с блоком `[VERIFIED_FACT_SHEET]`. |
+| **5** | `fact_checking` | `95%` | *«🛡️ Проверяю текст на соответствие фактам...»* | Арбитражная сверка в `FactCheckingCritic` (Auto-Fix). |
+| **6** | `draft_completed` | `100%` | *«✅ Черновик готов к согласованию»* | Отдача итогового `PostDraft` с отложенным ComfyUI рендером. |
+
+---
+
+### 11.2. Спецификация Streaming Endpoint (`GET /api/v1/content/generate/stream`)
+
+* **Метод:** `GET`
+* **URL:** `/api/v1/content/generate/stream`
+* **Заголовки:** `Accept: text/event-stream`, `Cache-Control: no-cache`
+* **cURL пример:**
+```bash
+curl -N -X GET "http://localhost:8000/api/v1/content/generate/stream?project_id=demo_brand&topic=Nothing%20Phone%203a" \
+  -H "Authorization: Bearer YOUR_API_TOKEN" \
+  -H "Accept: text/event-stream"
+```
+
+* **Формат потока сообщений (SSE Protocol):**
+```text
+event: progress
+data: {"step": "rag_lookup", "progress": 10, "message": "🔍 Поиск во внутренней базе знаний бренда..."}
+
+event: progress
+data: {"step": "web_research", "progress": 35, "message": "🌐 Анализирую характеристики Nothing Phone 3a в сети..."}
+
+event: progress
+data: {"step": "fact_distilled", "progress": 60, "message": "📋 Паспорт продукта сформирован: 3 ТТХ верифицировано"}
+
+event: progress
+data: {"step": "llm_generating", "progress": 80, "message": "✍️ Создаю публикацию в Tone of Voice бренда..."}
+
+event: progress
+data: {"step": "fact_checking", "progress": 95, "message": "🛡️ Проверяю факты и сверяю характеристики..."}
+
+event: complete
+data: {"step": "draft_completed", "progress": 100, "post": {"post_id": "post_a9f1b2", "status": "draft_text", "text_content": "...", "vram_cost_mb": 0}}
+```
+
+---
+
+### 11.3. Метрики Observability и мониторинг качества (SRE / Quality Metrics)
+
+Для предотвращения деградации качества в production-среде бэкенд логирует и экспортирует метрики в Prometheus / Grafana:
+
+1. **`fact_critic_intervention_rate` (Коэффициент вмешательства критика):**
+   $$\text{Intervention Rate} = \frac{\text{Количество постов с автокоррекцией}}{\text{Общее количество сгенерированных постов}}$$
+   * **Норма:** $< 10\%$.
+   * **Алерт (Warning):** Если $> 15\%$, это автоматический сигнал, что системный промпт генератора или блок `[FACT_SHEET]` требует ужесточения инструкций.
+2. **`grounding_fallback_rate` (Доля внешнего веб-ресёрча):**
+   Показывает, по какому проценту тем клиенты не загрузили локальные документы (сигнал для дозаполнения базы знаний тенанта).
+3. **`fact_types_distribution` (Типы правок):**
+   * Числовые галлюцинации (емкость АКБ, мегапиксели, граммовки).
+   * Сомнительные маркетинговые штампы (*«100% гарантия»*, *«лучший в мире»*).
+   * Неподтвержденные технологические свойства.
+
+---
+
+### 11.4. Стратегия разрешения конфликтов при противоречивых данных (Conflict Resolution)
+
+Если веб-поиск возвращает противоречивые данные (например, на одном сайте у смартфона указан процессор *Snapdragon 7s Gen 3*, а на другом — *MediaTek Dimensity 7200*):
+
+1. **Приоритет официального домена (Domain Authority Weighting):**
+   Сниппеты с официального сайта производителя (`espressif.com`, `apple.com`, `nothing.tech`) получают приоритет $1.0$, сторонние агрегаторы — $0.6$.
+2. **Консенсус большинства (Majority Voting):**
+   Характеристика попадает в `key_specs`, только если подтверждена минимум в двух независимых источниках.
+3. **Безопасная изоляция в `unverified_claims`:**
+   Если консенсус не найден, спорная характеристика **не попадает** в `key_specs`, а отправляется в `unverified_claims`. Генератор получает инструкцию описать свойство концептуально (*«Позиционируется с акцентом на высокую производительность в играх»*) без указания спорной модели чипа.
+
+
 
 
