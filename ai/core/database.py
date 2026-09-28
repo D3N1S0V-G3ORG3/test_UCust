@@ -12,7 +12,7 @@ try:
     from sqlalchemy import text
     from sqlalchemy.orm import declarative_base
     Base = declarative_base()
-except (ImportError, Exception):
+except Exception:
     create_async_engine = None
     async_sessionmaker = None
     AsyncSession = None
@@ -31,24 +31,33 @@ logger = logging.getLogger("Database")
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./ucust_local_dev.db")
 IS_POSTGRES = DATABASE_URL.startswith("postgresql")
 
+engine = None
+AsyncSessionLocal = None
+
 if create_async_engine is not None:
     try:
         engine = create_async_engine(DATABASE_URL, echo=False)
         AsyncSessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    except Exception:
+    except Exception as e:
+        logger.warning(f"⚠️ Ошибка создания асинхронного движка SQLAlchemy ({e}). Переключение на Fallback-режим.")
         engine = None
         AsyncSessionLocal = None
-else:
-    engine = None
-    AsyncSessionLocal = None
 
 
 async def init_db():
-    async with engine.begin() as conn:
-        if IS_POSTGRES:
-            try:
-                await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
-            except Exception as e:
-                logger.warning(f"⚠️ Ошибка инициализации расширения pgvector: {e}")
-        await conn.run_sync(Base.metadata.create_all)
-    logger.info(f"✅ База данных инициализирована. Режим PostgreSQL: {IS_POSTGRES}")
+    if engine is None:
+        logger.info("ℹ️ База данных работает в In-Memory / Mock режиме.")
+        return
+    try:
+        async with engine.begin() as conn:
+            if IS_POSTGRES:
+                try:
+                    await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
+                except Exception as e:
+                    logger.warning(f"⚠️ Ошибка инициализации расширения pgvector: {e}")
+            if hasattr(Base, "metadata") and hasattr(Base.metadata, "create_all"):
+                await conn.run_sync(Base.metadata.create_all)
+        logger.info(f"✅ База данных инициализирована. Режим PostgreSQL: {IS_POSTGRES}")
+    except Exception as init_err:
+        logger.warning(f"⚠️ Ошибка init_db: {init_err}")
+

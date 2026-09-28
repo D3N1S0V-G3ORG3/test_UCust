@@ -18,16 +18,17 @@ except (ImportError, Exception):
 
 try:
     from core.database import Base, IS_POSTGRES
-except ImportError:
+except Exception:
     try:
         from ai.core.database import Base, IS_POSTGRES
-    except ImportError:
+    except Exception:
         class _MockMetadata:
             def create_all(self, *args, **kwargs):
                 pass
         class Base:
             metadata = _MockMetadata()
         IS_POSTGRES = False
+
 
 try:
     from pgvector.sqlalchemy import Vector
