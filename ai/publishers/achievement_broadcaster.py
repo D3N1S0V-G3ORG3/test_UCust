@@ -548,45 +548,75 @@ class AchievementBroadcaster:
                     is_last_row = (r_idx == num_rows - 1)
                     row_caption = caption if is_last_row else ""
 
-                    media_group = []
-                    files_dict = {}
-                    opened_files = []
+                    if not album_files:
+                        continue
 
-                    try:
-                        for f_idx, p in enumerate(album_files):
-                            attach_key = f"r{r_idx}_photo_{f_idx}"
-                            item = {
-                                "type": "photo",
-                                "media": f"attach://{attach_key}"
-                            }
-                            if f_idx == 0 and row_caption:
-                                item["caption"] = row_caption
-                                item["parse_mode"] = "HTML"
-                            media_group.append(item)
-                            f_h = open(p, "rb")
-                            opened_files.append(f_h)
-                            files_dict[attach_key] = f_h
+                    # Если в ряду всего 1 полоса (например, сгенерирован 1 мастер-кадр)
+                    if len(album_files) == 1:
+                        try:
+                            with open(album_files[0], "rb") as f_h:
+                                req_data = {
+                                    "chat_id": self.target_channel,
+                                    "caption": row_caption,
+                                    "parse_mode": "HTML"
+                                }
+                                if is_last_row and reply_markup:
+                                    req_data["reply_markup"] = json.dumps(reply_markup)
+                                resp = await client.post(
+                                    f"https://api.telegram.org/bot{bot_token}/sendPhoto",
+                                    data=req_data,
+                                    files={"photo": f_h}
+                                )
+                                res_json = resp.json()
+                                if res_json.get("ok"):
+                                    success_count += 1
+                                    print(f"  ✅ Ряд {r_idx + 1}/{num_rows} успешно опубликован (sendPhoto)!")
+                                else:
+                                    print(f"  ⚠️ Ошибка публикации ряда {r_idx + 1}: {res_json}")
+                        except Exception as photo_row_err:
+                            print(f"  ⚠️ Исключение при отправке ряда {r_idx + 1}: {photo_row_err}")
 
-                        resp = await client.post(
-                            f"https://api.telegram.org/bot{bot_token}/sendMediaGroup",
-                            data={
-                                "chat_id": self.target_channel,
-                                "media": json.dumps(media_group)
-                            },
-                            files=files_dict
-                        )
-                        res_json = resp.json()
-                        if res_json.get("ok"):
-                            success_count += 1
-                            print(f"  ✅ Ряд {r_idx + 1}/{num_rows} успешно опубликован!")
-                        else:
-                            print(f"  ⚠️ Ошибка публикации ряда {r_idx + 1}: {res_json}")
-                    finally:
-                        for fh in opened_files:
-                            try:
-                                fh.close()
-                            except Exception:
-                                pass
+                    # Если в ряду 2+ полосы (полноценная свайп-рулетка)
+                    else:
+                        media_group = []
+                        files_dict = {}
+                        opened_files = []
+
+                        try:
+                            for f_idx, p in enumerate(album_files):
+                                attach_key = f"r{r_idx}_photo_{f_idx}"
+                                item = {
+                                    "type": "photo",
+                                    "media": f"attach://{attach_key}"
+                                }
+                                if f_idx == 0 and row_caption:
+                                    item["caption"] = row_caption
+                                    item["parse_mode"] = "HTML"
+                                media_group.append(item)
+                                f_h = open(p, "rb")
+                                opened_files.append(f_h)
+                                files_dict[attach_key] = f_h
+
+                            resp = await client.post(
+                                f"https://api.telegram.org/bot{bot_token}/sendMediaGroup",
+                                data={
+                                    "chat_id": self.target_channel,
+                                    "media": json.dumps(media_group)
+                                },
+                                files=files_dict
+                            )
+                            res_json = resp.json()
+                            if res_json.get("ok"):
+                                success_count += 1
+                                print(f"  ✅ Ряд {r_idx + 1}/{num_rows} успешно опубликован (sendMediaGroup)!")
+                            else:
+                                print(f"  ⚠️ Ошибка публикации ряда {r_idx + 1}: {res_json}")
+                        finally:
+                            for fh in opened_files:
+                                try:
+                                    fh.close()
+                                except Exception:
+                                    pass
 
                     # Минимальная пауза между альбомами для сохранения строгой вертикальной последовательности
                     await asyncio.sleep(0.3)

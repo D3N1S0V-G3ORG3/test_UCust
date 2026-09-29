@@ -57,7 +57,7 @@ class ComfyCLIRunner:
         comfyui_url: Optional[str] = None,
         output_dir: Optional[str] = None,
         workflow_template_path: Optional[str] = None,
-        timeout: float = 600.0,
+        timeout: float = 900.0,
     ) -> None:
         self.comfyui_url = (comfyui_url or os.getenv("COMFYUI_URL", "http://127.0.0.1:8188")).rstrip("/")
         self.output_dir = output_dir or os.getenv("COMFYUI_OUTPUT_DIR", os.path.join(PROJECT_ROOT, "output", "photos"))
@@ -500,23 +500,30 @@ class ComfyCLIRunner:
 
         return workflow_json
 
-    async def is_server_online(self, timeout: float = 3.0) -> bool:
+    async def is_server_online(self, timeout: float = 10.0) -> bool:
         """
         Проверяет доступность локального сервера ComfyUI (http://127.0.0.1:8188).
+        Устойчив к временным задержкам во время загрузки весов моделей.
         """
         if httpx is None:
             return False
-        try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                res = await client.get(f"{self.comfyui_url}/system_stats")
-                return res.status_code == 200
-        except Exception:
+        for attempt in range(3):
             try:
                 async with httpx.AsyncClient(timeout=timeout) as client:
-                    res = await client.get(f"{self.comfyui_url}/")
-                    return res.status_code in {200, 302, 404}
+                    res = await client.get(f"{self.comfyui_url}/system_stats")
+                    if res.status_code == 200:
+                        return True
             except Exception:
-                return False
+                try:
+                    async with httpx.AsyncClient(timeout=timeout) as client:
+                        res = await client.get(f"{self.comfyui_url}/")
+                        if res.status_code in {200, 302, 404}:
+                            return True
+                except Exception:
+                    pass
+            if attempt < 2:
+                await asyncio.sleep(2.0)
+        return False
 
     async def stop_server(self) -> bool:
         """
