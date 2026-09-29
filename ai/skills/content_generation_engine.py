@@ -11,7 +11,25 @@ import uuid
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 
-from prompts.telegram_generation_prompt import TELEGRAM_EXPERT_PROMPT
+try:
+    from prompts.telegram_generation_prompt import TELEGRAM_EXPERT_PROMPT
+    from prompts.vk_generation_prompt import VK_EXPERT_PROMPT
+    from prompts.ok_generation_prompt import OK_EXPERT_PROMPT
+    from prompts.max_messenger_generation_prompt import MAX_MESSENGER_EXPERT_PROMPT
+    from skills.telegram_rich_formatter import TelegramRichPostFormatter
+    from skills.vk_rich_formatter import VKPostFormatter
+    from skills.ok_rich_formatter import OKPostFormatter
+    from skills.max_messenger_formatter import MaxMessengerFormatter
+except ImportError:
+    from ai.prompts.telegram_generation_prompt import TELEGRAM_EXPERT_PROMPT
+    from ai.prompts.vk_generation_prompt import VK_EXPERT_PROMPT
+    from ai.prompts.ok_generation_prompt import OK_EXPERT_PROMPT
+    from ai.prompts.max_messenger_generation_prompt import MAX_MESSENGER_EXPERT_PROMPT
+    from ai.skills.telegram_rich_formatter import TelegramRichPostFormatter
+    from ai.skills.vk_rich_formatter import VKPostFormatter
+    from ai.skills.ok_rich_formatter import OKPostFormatter
+    from ai.skills.max_messenger_formatter import MaxMessengerFormatter
+
 from skills.rag_retriever_skill import CleanRAGRetrieverSkill
 from skills.audit_deduplication_agent import AuditDeduplicationAgent
 from skills.fact_checking_critic import FactCheckingCritic
@@ -128,13 +146,55 @@ class ContentGenerationEngine:
             else:
                 rag_context = f"- {company_name}: специализируется на сфере '{niche}', ключевое УТП: {positioning}."
 
-        # 3. Сборка системного и пользовательского промпта для Telegram 7.2+
-        system_msg = TELEGRAM_EXPERT_PROMPT.format(
-            tone_of_voice=tov,
-            positioning=positioning,
-            content_goal=content_goal,
-            rag_context=rag_context
-        )
+        group_domain = about.get("domain") or profile.get("domain") or company_name.lower().replace(" ", "_")
+        target_channel_norm = (target_channel or "telegram").lower()
+
+        # 3. Сборка системного и пользовательского промпта под целевую платформу
+        if "vk" in target_channel_norm or "вк" in target_channel_norm or "вконтакте" in target_channel_norm:
+            system_msg = VK_EXPERT_PROMPT.format(
+                tone_of_voice=tov,
+                positioning=positioning,
+                content_goal=content_goal,
+                group_domain=group_domain,
+                rag_context=rag_context
+            )
+            user_msg = (
+                f"Напиши публикацию для ВКонтакте сообщества '{company_name}' (ниша: {niche}) на тему: {actual_topic}.\n"
+                f"Соблюдай Редполитику VK: хук в первые 280 символов до ката, без HTML-разметки, буллеты списком, ссылка в первом комментарии."
+            )
+        elif "ok" in target_channel_norm or "одноклассники" in target_channel_norm:
+            system_msg = OK_EXPERT_PROMPT.format(
+                tone_of_voice=tov,
+                positioning=positioning,
+                content_goal=content_goal,
+                rag_context=rag_context
+            )
+            user_msg = (
+                f"Напиши публикацию для Одноклассников компании '{company_name}' (ниша: {niche}) на тему: {actual_topic}.\n"
+                f"Соблюдай Редполитику ОК: короткие предложения, пустая строка после каждого предложения, теплые эмодзи, призыв ставить Класс."
+            )
+        elif "max" in target_channel_norm or "messenger" in target_channel_norm or "мессенджер" in target_channel_norm:
+            system_msg = MAX_MESSENGER_EXPERT_PROMPT.format(
+                tone_of_voice=tov,
+                positioning=positioning,
+                content_goal=content_goal,
+                rag_context=rag_context
+            )
+            user_msg = (
+                f"Напиши прямое push-сообщение для Max Messenger от '{company_name}' (ниша: {niche}) на тему: {actual_topic}.\n"
+                f"Соблюдай Редполитику: суть в первых 50-70 символах, длина до 350 символов, без шаблонных приветствий, ровно один CTA в конце."
+            )
+        else:  # Default: Telegram 7.2+
+            system_msg = TELEGRAM_EXPERT_PROMPT.format(
+                tone_of_voice=tov,
+                positioning=positioning,
+                content_goal=content_goal,
+                rag_context=rag_context
+            )
+            user_msg = (
+                f"Напиши публикацию для Telegram-канала компании '{company_name}' (ниша: {niche}) на тему: {actual_topic}.\n"
+                f"Строго соблюдай Редполитику: лимит 500-750 символов, жирный заголовок-хук в начале, 2-3 буллета (▫️) с выделением характеристик, 3-4 хештега в подвале."
+            )
 
         if fact_sheet and fact_sheet.is_grounded:
             system_msg += (
@@ -142,11 +202,6 @@ class ContentGenerationEngine:
                 f"{fact_sheet.to_prompt_block()}\n"
                 "Правило: не выдумывай несуществующие цифры и технологии, отсутствующие в списке выше."
             )
-
-        user_msg = (
-            f"Напиши публикацию для Telegram-канала компании '{company_name}' (ниша: {niche}) на тему: {actual_topic}.\n"
-            f"Строго соблюдай Редполитику: лимит 500-750 символов, жирный заголовок-хук в начале, 2-3 буллета (▫️) с выделением характеристик, 3-4 хештега в подвале."
-        )
 
         # 4. LLM Инференс
         post_text = ""
@@ -165,14 +220,36 @@ class ContentGenerationEngine:
 
         # Детерминированный фоллбэк при недоступности локальных весов
         if not post_text:
-            post_text = (
-                f"☕ <b>{actual_topic}</b> — ключевые стандарты и детали от {company_name}.\n\n"
-                f"<blockquote expandable>\n"
-                f"{rag_context}\n"
-                f"</blockquote>\n\n"
-                f"Каждый день мы совершенствуем процессы, чтобы вы получали безупречный результат.\n\n"
-                f"👉 Подробнее по ссылке в описании профиля или напишите нам в личные сообщения."
-            )
+            if "vk" in target_channel_norm or "вк" in target_channel_norm:
+                post_text = (
+                    f"НОВИНКА ОТ {company_name.upper()}\n\n"
+                    f"{actual_topic} — проверенное качество и натуральные ингредиенты.\n\n"
+                    f"▫️ {rag_context}\n\n"
+                    f"👉 Ссылка на каталог и оформление — в первом комментарии под постом.\n\n"
+                    f"#новинки@{group_domain}"
+                )
+            elif "ok" in target_channel_norm or "одноклассники" in target_channel_norm:
+                post_text = (
+                    f"Встречайте новинку от «{company_name}»! 🌻\n\n"
+                    f"{actual_topic} — теперь доступно для заказа.\n\n"
+                    f"📌 {rag_context}\n\n"
+                    f"Ставьте «Класс» 👍, чтобы не потерять пост, и делитесь им с друзьями!"
+                )
+            elif "max" in target_channel_norm or "messenger" in target_channel_norm:
+                post_text = (
+                    f"📦 **{actual_topic} уже в наличии**\n\n"
+                    f"Оформите заказ в «{company_name}» прямо сейчас.\n\n"
+                    f"👉 [Оформить заказ в один клик](https://example.com/order)"
+                )
+            else:
+                post_text = (
+                    f"☕ <b>{actual_topic}</b> — ключевые стандарты и детали от {company_name}.\n\n"
+                    f"<blockquote expandable>\n"
+                    f"{rag_context}\n"
+                    f"</blockquote>\n\n"
+                    f"Каждый день мы совершенствуем процессы, чтобы вы получали безупречный результат.\n\n"
+                    f"👉 Подробнее по ссылке в описании профиля или напишите нам в личные сообщения."
+                )
 
         # 4.1. Арбитражная проверка фактов и автокоррекция (FactCheckingCritic)
         critic_report = FactCheckingCritic.validate_and_autocorrect(
@@ -180,6 +257,21 @@ class ContentGenerationEngine:
             fact_sheet=fact_sheet
         )
         post_text = critic_report.sanitized_text
+
+        # 4.2. Платформо-специфичный детерминированный пост-процессинг
+        if "vk" in target_channel_norm or "вк" in target_channel_norm:
+            vk_res = VKPostFormatter.format_vk_post(
+                text=post_text,
+                group_domain=group_domain
+            )
+            post_text = vk_res["post_text"]
+        elif "ok" in target_channel_norm or "одноклассники" in target_channel_norm:
+            post_text = OKPostFormatter.format_ok_post(text=post_text)
+        elif "max" in target_channel_norm or "messenger" in target_channel_norm:
+            max_res = MaxMessengerFormatter.format_max_message(text=post_text)
+            post_text = max_res["message_text"]
+        else:  # Telegram
+            post_text = TelegramRichPostFormatter.sanitize_telegram_html(text=post_text)
 
         # 5. Двухфакторная матрица эстетики (Tenant Aesthetic ∩ Product Color) и классификация ShotIntent
         topic_lower = actual_topic.lower()
