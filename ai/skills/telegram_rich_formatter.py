@@ -178,10 +178,96 @@ class TelegramRichPostFormatter:
         res = res.replace("<b><b>", "<b>").replace("</b></b>", "</b>")
         res = res.replace("<code><code>", "<code>").replace("</code></code>", "</code>")
 
-        # 5. Принудительное форсирование «воздуха» и разметки
+        # 5. Защита от эмодзи внутри тегов форматирования (<s>, <code>, <b>)
+        res = cls.sanitize_tag_emojis(res)
+
+        # 6. Типографика (длинные тире и кавычки-елочки вне HTML-тегов)
+        res = cls.sanitize_typography(res)
+
+        # 7. Санитизация blockquote от разрывов двойными переносами
+        res = cls.sanitize_blockquotes(res)
+
+        # 8. Принудительное форсирование «воздуха» и разметки
         res = cls.enforce_telegram_air(res)
 
         return res.strip()
+
+    @classmethod
+    def sanitize_blockquotes(cls, text: str) -> str:
+        """
+        Гарантирует целостность тегов <blockquote> / <blockquote expandable>:
+        схлопывает любые двойные переносы (\\n\\n+) внутри цитаты в одинарный перенос (\\n),
+        чтобы парсер Telegram не разбивал цитату на несколько отдельных блоков.
+        """
+        def _clean_bq(m):
+            tag_open = m.group(1)
+            content = m.group(2)
+            tag_close = m.group(3)
+            # Внутри цитаты заменяем множественные переносы на одинарный
+            cleaned_content = re.sub(r'\n{2,}', '\n', content.strip())
+            return f"{tag_open}{cleaned_content}{tag_close}"
+
+        return re.sub(r'(<blockquote[^>]*>)([\s\S]*?)(</blockquote>)', _clean_bq, text, flags=re.IGNORECASE)
+
+    @classmethod
+    def sanitize_typography(cls, text: str) -> str:
+        """
+        Применяет правила качественной русской типографики вне HTML-тегов:
+        - Заменяет дефисы и короткие тире с пробелами (" - ", " – ") на длинное тире (" — ")
+        - Заменяет прямые машинные кавычки ("...") на русские кавычки-ёлочки («...»)
+        - Гарантирует целостность HTML-тегов, ссылок и атрибутов.
+        """
+        if not text:
+            return ""
+
+        # Разбиваем текст на токены (HTML теги и обычный текст)
+        tokens = re.split(r'(<[^>]+>)', text)
+        for i, token in enumerate(tokens):
+            if not token.startswith('<'):
+                # 1. Замена дефисов между словами на длинное тире
+                token = re.sub(r'(\s)[-–](\s)', r'\1—\2', token)
+                # 2. Замена прямых парных кавычек на елочки
+                token = re.sub(r'"([^"\n<>]+?)"', r'«\1»', token)
+                tokens[i] = token
+
+        return "".join(tokens)
+
+    @classmethod
+    def sanitize_tag_emojis(cls, text: str) -> str:
+        """
+        Предотвращает ошибки Telegram Bot API 'Bad Request: can't parse entities',
+        вынося эмодзи из тегов <s>, <code>, <b> наружу.
+        Например: <s>1 450 ₽ 📉</s> -> <s>1 450 ₽</s> 📉
+                 <code>🏷️ SALE</code> -> 🏷️ <code>SALE</code>
+        """
+        if not text:
+            return ""
+
+        emoji_class = r'[\U00010000-\U0010ffff\u2600-\u27bf\u2300-\u23ff\u2b50\ufe0f]'
+
+        def _clean_tag(m):
+            tag_name = m.group(1)
+            content = m.group(2)
+
+            # Вынос ведущих эмодзи
+            prefix_emoji = ""
+            m_pre = re.match(r'^(\s*(?:' + emoji_class + r'+\s*)+)', content)
+            if m_pre:
+                prefix_emoji = m_pre.group(1).strip() + " "
+                content = content[m_pre.end():]
+
+            # Вынос замыкающих эмодзи
+            suffix_emoji = ""
+            m_suf = re.search(r'(\s*(?:' + emoji_class + r'+\s*)+)$', content)
+            if m_suf:
+                suffix_emoji = " " + m_suf.group(1).strip()
+                content = content[:m_suf.start()]
+
+            return f"{prefix_emoji}<{tag_name}>{content.strip()}</{tag_name}>{suffix_emoji}"
+
+        res = re.sub(r'<(s|code|b)>(.*?)</\1>', _clean_tag, text, flags=re.DOTALL)
+        res = re.sub(r'[ \t]{2,}', ' ', res)
+        return res
 
     @classmethod
     def enforce_telegram_air(cls, text: str) -> str:
