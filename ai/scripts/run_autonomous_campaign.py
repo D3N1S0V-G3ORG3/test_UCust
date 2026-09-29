@@ -77,6 +77,7 @@ async def run_pipeline(
     cta_label: Optional[str] = None,
     channel: str = "@testaipublisher",
     auto_publish: bool = True,
+    show_telemetry: bool = False,
     variation_index: int = 0,
     batch_variations: Optional[int] = None,
     images: Optional[List[str]] = None,
@@ -249,24 +250,32 @@ async def run_pipeline(
         if fact_sheet and fact_sheet.is_grounded:
             system_msg += f"\n\n{fact_sheet.to_prompt_block()}\nСтрогое правило: не выдумывать характеристики вне FactSheet."
 
+        puzzle_hint = "\n<i>Листайте слои карусели, чтобы собрать свой кулич!</i>" if clean_format in ["puzzle", "swipe_puzzle", "cryptex"] else ""
+        
         user_msg = (
-            f"Напиши публикацию для Telegram-канала '{company_name}' (ниша: {niche}).\n"
-            f"Тема: {actual_topic}\n"
-            f"Формат: {clean_format}\n"
-            f"Фреймворк: {framework or 'PAS'}\n"
-            f"Триггер: {trigger or 'scarcity_fomo'}\n"
-            f"Длина: 400-650 символов (лаконично, емко, без воды).\n"
+            f"Напиши публикацию для Telegram-канала '{company_name}' (ниша: {niche}) строго по Редполитике:\n"
+            f"• Тема: {actual_topic}\n"
+            f"• Формат: {clean_format}{puzzle_hint}\n"
+            f"• Фреймворк: {framework or 'PAS'}, Триггер: {trigger or 'scarcity_fomo'}\n"
+            f"• Лимит: СТРОГО 500-750 символов (должен полностью уместиться в 1 подпись под фото).\n"
+            f"• Архитектура:\n"
+            f"  1. <b>Хук</b> (первое предложение жирным с сутью и выгодой, до 150 символов).\n"
+            f"  2. 2-3 коротких буллета (▫️) с жирным выделением ключевых характеристик/цифр.\n"
         )
         if quote_text:
-            user_msg += f"\nЦитата мастера: «{quote_text}» (оберни в <blockquote expandable><b>Слово шеф-мастера:</b>\n«{quote_text}»</blockquote>)."
+            user_msg += f"  3. Цитата мастера: <blockquote expandable>«{quote_text}»</blockquote>\n"
         if old_price and new_price:
-            user_msg += f"\nСкидка: старая цена {old_price}, новая цена {new_price} (вставь в формате: 🏷️ <b>Специальная цена:</b> <s>{old_price}</s> <b>{new_price}</b>)."
+            user_msg += f"  4. Оффер и цена: 🏷️ <b>Цена:</b> <s>{old_price}</s> <b>{new_price}</b>"
+            if promo_code:
+                user_msg += f" по промокоду <code>{promo_code}</code>"
+            user_msg += ".\n"
+        elif promo_code:
+            user_msg += f"  4. Промокод: 🎟️ Промокод на скидку: <code>{promo_code}</code>.\n"
         if secret_spoiler:
-            user_msg += f"\nСекретный подарок: {secret_spoiler} (оберни в: 🎁 <b>Секретный подарок:</b> <tg-spoiler>{secret_spoiler}</tg-spoiler>)."
-        if promo_code:
-            user_msg += f"\nПромокод: строго <code>{promo_code}</code> (НЕ придумывай другие промокоды!)."
+            user_msg += f"  5. Подарок/секрет: 🎁 <tg-spoiler>{secret_spoiler}</tg-spoiler>\n"
         if cta_label:
-            user_msg += f"\nПризыв к действию: нажать кнопку ниже [{cta_label}]."
+            user_msg += f"  6. Призыв к действию: 👉 [{cta_label}]({cta_url or 'https://t.me/'})\n"
+        user_msg += f"  7. 3-4 хештега в подвале через пустую строку.\n"
 
         try:
             from skills.saiga_llm import SaigaLLMSkill
@@ -281,15 +290,27 @@ async def run_pipeline(
             logger.warning(f"Локальный инференс Saiga LLM: {llm_err}")
 
         if not post_text:
+            bullets = ""
+            if rag_context:
+                facts = [f.strip() for f in rag_context.split("\n") if f.strip() and not f.startswith("#")]
+                bullets = "\n".join([f"▫️ {f}" for f in facts[:3]])
+
             post_text = (
-                f"🍞 <b>{actual_topic} — честный рецепт от «{company_name}»</b>\n\n"
-                f"Почему правильное тесто не терпит спешки?\n\n"
-                f"<blockquote expandable>\n"
-                f"<b>Факты о рецептуре и стандартах:</b>\n"
-                f"{rag_context}\n"
-                f"</blockquote>\n\n"
-                f"Каждую партию выпекаем вручную рано утром, чтобы к вашему столу попадал еще теплый мякиш с тонкой хрустящей корочкой."
+                f"<b>«{company_name}» открывает предзаказ на {actual_topic.lower()}</b> — выпекаем на живой закваске с длительной 72-часовой ферментацией теста.\n\n"
+                f"{bullets}\n\n"
             )
+            if quote_text:
+                post_text += f"<blockquote expandable>«{quote_text}»</blockquote>\n\n"
+            if old_price and new_price:
+                post_text += f"🏷️ <b>Цена:</b> <s>{old_price}</s> <b>{new_price}</b>"
+                if promo_code:
+                    post_text += f" по промокоду <code>{promo_code}</code>"
+                post_text += ".\n"
+            if secret_spoiler:
+                post_text += f"🎁 <b>Подарок:</b> <tg-spoiler>{secret_spoiler}</tg-spoiler>\n"
+            if clean_format in ["puzzle", "swipe_puzzle", "cryptex"]:
+                post_text += "\n<i>Листайте слои карусели, чтобы собрать свой идеальный кулич!</i>\n"
+            post_text += f"\n#{company_name.replace(' ', '')} #{niche.replace(' ', '')} #Пасха2026"
 
     # -------------------------------------------------------------
     # ЭТАП 2.1: Обогащение и зачистка штампов / фейковых промокодов
@@ -299,14 +320,16 @@ async def run_pipeline(
         post_text = re.sub(r'\b(PAS23|PAS2023|PAS26|PROMO\w*)\b', promo_code, post_text, flags=re.IGNORECASE)
         post_text = re.sub(r'<code>(?!' + re.escape(promo_code) + r')[^<]+</code>', f'<code>{promo_code}</code>', post_text)
 
-    # Удаление канцелярских строк
+    # Удаление канцелярских строк и шаблонных заголовков
     cliche_lines = [
         "Позиционируется как:",
         "Звони нам или оформляй заказ в директ",
         "звони нам или в директ",
         "в директ",
         "маленькое чудо, которое оживает прямо в ваших руках",
-        "Сделаем вашу Пасху яркой и вкусной!"
+        "Сделаем вашу Пасху яркой и вкусной!",
+        "Слово шеф-мастера:",
+        "Состав и секреты мастеров:"
     ]
     cleaned_lines = []
     for line in post_text.splitlines():
@@ -314,22 +337,6 @@ async def run_pipeline(
             continue
         cleaned_lines.append(line)
     post_text = "\n".join(cleaned_lines).strip()
-
-    # Вставка цитаты шефа / мастера при наличии (если модель не вставила сама)
-    if quote_text and quote_text not in post_text:
-        post_text += f"\n\n<blockquote expandable><b>Слово шеф-мастера:</b>\n«{quote_text}»</blockquote>"
-
-    # Вставка скидок со зачеркиванием старой цены (если еще нет)
-    if old_price and new_price and new_price not in post_text:
-        post_text += f"\n\n🏷️ <b>Специальная цена недели:</b> <s>{old_price}</s> <b>{new_price}</b>"
-
-    # Вставка спойлера интриги / секрета (если еще нет)
-    if secret_spoiler and secret_spoiler not in post_text:
-        post_text += f"\n\n🎁 <b>Секретный подарок:</b> <tg-spoiler>{secret_spoiler}</tg-spoiler>"
-
-    # Вставка кликабельного промокода (если еще нет)
-    if promo_code and promo_code not in post_text:
-        post_text += f"\n\n🎟️ Назовите промокод <code>{promo_code}</code> на кассе или в боте для получения скидки 15%."
 
     # Финальная очистка и конвертация в 100% валидный Telegram HTML
     post_text = TelegramRichPostFormatter.sanitize_telegram_html(post_text, promo_code=promo_code)
@@ -502,8 +509,8 @@ async def run_pipeline(
 
         part1_caption, part2_text = AchievementBroadcaster.split_text_for_telegram(
             post_text,
-            max_caption_len=1000,
-            target_ratio=0.85
+            max_caption_len=1024,
+            target_ratio=0.90
         )
 
         telemetry_block = (
@@ -513,10 +520,8 @@ async def run_pipeline(
             f"• GPU Фоторендер ({len(all_photo_paths)} фото): {round(photo_sec, 2)} сек\n"
             f"• Точность OTK: {int(critic_score * 100)}%\n"
             f"• Итого: {total_duration} сек\n\n"
-            f"#{company_name.replace(' ', '')} #{niche.replace(' ', '')} #UCust"
+            f"#{company_name.replace(' ', '')} #{niche.replace(' ', '')}"
         )
-
-        metrics_message = f"{part2_text}\n\n---\n{telemetry_block}" if part2_text else telemetry_block
 
         # Формирование инлайн-кнопок
         reply_markup = None
@@ -525,7 +530,7 @@ async def run_pipeline(
             reply_markup = {"inline_keyboard": [[{"text": label, "url": cta_url}]]}
 
         if clean_format in ["puzzle", "swipe_puzzle", "cryptex"] and puzzle_row_albums:
-            # Публикация 3-этажного интерактивного свайп-пазла
+            # Публикация интерактивного свайп-пазла
             pub_res = await broadcaster.publish_interactive_puzzle_async(
                 row_albums=puzzle_row_albums,
                 caption=part1_caption,
@@ -546,9 +551,11 @@ async def run_pipeline(
 
         if pub_res and pub_res.get("status") in ["success", "interactive_swipe_puzzle"]:
             print(f"🎉 УСПЕШНО! Пост ({clean_format.upper()}) + медиа опубликованы в {channel}")
-            await asyncio.sleep(1.5)
-            await broadcaster._publish_via_bot_api(metrics_message, None)
-            print(f"📊 Метрики и хэштеги опубликованы вторым блоком.")
+            if part2_text or show_telemetry:
+                await asyncio.sleep(1.5)
+                second_msg = f"{part2_text}\n\n---\n{telemetry_block}" if part2_text and show_telemetry else (part2_text or telemetry_block)
+                await broadcaster._publish_via_bot_api(second_msg, None)
+                print(f"📊 Дополнительный блок опубликован.")
         else:
             print(f"ℹ️ Статус вещателя: {pub_res}")
 
@@ -575,15 +582,15 @@ def main():
     parser.add_argument("--tone", type=str, default="Теплый, аппетитный, гостеприимный, экспертный", help="Тональность Tone of Voice")
     parser.add_argument(
         "--format", "-f", type=str, default="single",
-        choices=["single", "carousel", "mosaic", "grid", "poll", "quiz", "storytelling", "puzzle"],
-        help="Формат публикации: single (пост), carousel (карусель), mosaic (мозаика), poll (опрос), quiz (викторина), storytelling (сторителлинг), puzzle (пазл)"
+        choices=["single", "carousel", "mosaic", "grid", "poll", "quiz", "storytelling", "puzzle", "swipe_puzzle", "cryptex"],
+        help="Формат публикации"
     )
     parser.add_argument("--aspect-ratio", "--ratio", type=str, default="1:1", choices=["1:1", "4:5", "9:16", "16:9", "3:4", "4:3"], help="Формат кадра")
     parser.add_argument("--stage", type=str, default="product_aware", help="Ступень воронки Бена Ханта")
     parser.add_argument("--framework", type=str, default="PAS", help="Формула копирайтинга (PAS, AIDA, BAB, FAB)")
     parser.add_argument("--trigger", type=str, default="scarcity_fomo", help="Психологический триггер Чалдини")
     parser.add_argument("--aesthetic", type=str, default="artisan_bakery", help="Эстетика кадра (artisan_bakery, loft, scandi_eco, glam)")
-    parser.add_argument("--tier", type=str, default="BUSINESS", choices=["START", "BUSINESS", "ENTERPRISE", "CUSTOM"], help="Тариф медиа-оснащения")
+    parser.add_argument("--tier", type=str, default="BUSINESS", choices=["START", "BUSINESS", "CUSTOM"], help="Тариф медиа-оснащения")
     parser.add_argument("--sku-id", type=str, default=None, help="ID точного SKU из PIM каталога для 1-клик привязки")
     parser.add_argument("--promo", "--promo-code", type=str, default="СВЕЖЕСТЬ2026", help="Промокод для кликабельного копирования <code>")
     parser.add_argument("--old-price", type=str, default=None, help="Старая цена для зачеркивания <s> (например, '890 ₽')")
@@ -597,6 +604,7 @@ def main():
     parser.add_argument("--images", "-i", nargs="+", default=None, help="Прикрепленные фото / вложения")
     parser.add_argument("--channel", type=str, default="@testaipublisher", help="Telegram-канал для публикации")
     parser.add_argument("--no-publish", action="store_true", help="Не публиковать в Telegram (только локальный прогон)")
+    parser.add_argument("--show-telemetry", action="store_true", default=False, help="Публиковать отладочную телеметрию вторым сообщением (по умолчанию выключено)")
     parser.add_argument("--dev", action="store_true", help="Режим разработки (без жесткого требования ComfyUI GPU)")
 
     args = parser.parse_args()
@@ -626,6 +634,7 @@ def main():
         images=args.images,
         channel=args.channel,
         auto_publish=not args.no_publish,
+        show_telemetry=args.show_telemetry,
         dev_mode=args.dev
     ))
 
