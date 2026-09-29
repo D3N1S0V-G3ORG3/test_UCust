@@ -742,7 +742,7 @@ class ComfyCLIRunner:
         for node in workflow_json.get("nodes", []):
             node_id = str(node.get("id"))
             class_type = node.get("type")
-            if not class_type or class_type in gui_only_types or "comparer" in class_type.lower():
+            if not class_type or class_type in gui_only_types or "comparer" in class_type.lower() or node.get("mode") == 4:
                 continue
 
             inputs = {}
