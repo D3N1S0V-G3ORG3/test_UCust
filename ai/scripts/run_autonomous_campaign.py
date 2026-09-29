@@ -453,24 +453,22 @@ async def run_pipeline(
         except Exception as mos_err:
             logger.warning(f"Сборка мозаики 2x2: {mos_err}")
 
-    # Если запрошена интерактивная механика пазла (Mix & Match) и есть мастер-фото, делаем нарезку слоев
-    if clean_format in ["puzzle"] and all_photo_paths:
+    # 4.3 Сборка интерактивного свайп-пазла (Telegram Slot Machine)
+    puzzle_row_albums: List[List[str]] = []
+    if clean_format in ["puzzle", "swipe_puzzle", "cryptex"] and all_photo_paths:
         try:
-            from PIL import Image
-            print(f"  🧩 Нарезка мастер-кадра на 4 согласованных сегмента интерактивного пазла...")
-            slicer = InteractivePuzzleSlicer()
-            master_img = Image.open(all_photo_paths[0])
-            slices = slicer.slice_image(master_img)
-            out_dir = os.path.dirname(all_photo_paths[0])
-            base_name = os.path.splitext(os.path.basename(all_photo_paths[0]))[0]
-            sliced_paths = []
-            for s_idx, sl in enumerate(slices):
-                sl_path = os.path.join(out_dir, f"{base_name}_layer{s_idx+1}.webp")
-                sl.save(sl_path, "WEBP", quality=95)
-                sliced_paths.append(os.path.abspath(sl_path))
-            if sliced_paths:
-                all_photo_paths = sliced_paths
-                print(f"  ✅ Интерактивный пазл из {len(sliced_paths)} слоев успешно сформирован!")
+            from skills.interactive_puzzle_generator import InteractivePuzzleSlicer
+            print(f"  🧩 Нарезка {len(all_photo_paths)} мастер-кадров на 3-этажный свайп-пазл Telegram (соотношение 3:1)...")
+            out_dir = os.path.join(os.path.dirname(all_photo_paths[0]), "puzzle_slot_machine")
+            puzzle_row_albums = InteractivePuzzleSlicer.create_telegram_slot_machine_package(
+                image_paths=all_photo_paths,
+                output_dir=out_dir,
+                num_rows=3,
+                target_slice_size=(1200, 400),
+                scramble=True
+            )
+            if puzzle_row_albums:
+                print(f"  ✅ 3 ряда свайп-пазла сформированы (по {len(puzzle_row_albums[0])} полос в каждом ряду)!")
         except Exception as slice_err:
             logger.warning(f"Нарезка пазла: {slice_err}")
 
@@ -501,8 +499,8 @@ async def run_pipeline(
 
         part1_caption, part2_text = AchievementBroadcaster.split_text_for_telegram(
             post_text,
-            max_caption_len=950,
-            target_ratio=0.40
+            max_caption_len=1000,
+            target_ratio=0.85
         )
 
         telemetry_block = (
@@ -523,19 +521,27 @@ async def run_pipeline(
             label = cta_label or ("🛍️ Оформить заказ" if "пекар" in niche or "еда" in niche else "🌐 Перейти на сайт")
             reply_markup = {"inline_keyboard": [[{"text": label, "url": cta_url}]]}
 
-        pub_res = await broadcaster._publish_via_bot_api(
-            part1_caption,
-            all_photo_paths if len(all_photo_paths) > 1 else (all_photo_paths[0] if all_photo_paths else None)
-        )
-        if pub_res is None and all_photo_paths:
-            pub_res = await broadcaster.broadcast_milestone_async(
-                title="",
-                description=part1_caption,
-                metrics=None,
-                media_path=all_photo_paths[0]
+        if clean_format in ["puzzle", "swipe_puzzle", "cryptex"] and puzzle_row_albums:
+            # Публикация 3-этажного интерактивного свайп-пазла
+            pub_res = await broadcaster.publish_interactive_puzzle_async(
+                row_albums=puzzle_row_albums,
+                caption=part1_caption,
+                reply_markup=reply_markup
             )
+        else:
+            pub_res = await broadcaster._publish_via_bot_api(
+                part1_caption,
+                all_photo_paths if len(all_photo_paths) > 1 else (all_photo_paths[0] if all_photo_paths else None)
+            )
+            if pub_res is None and all_photo_paths:
+                pub_res = await broadcaster.broadcast_milestone_async(
+                    title="",
+                    description=part1_caption,
+                    metrics=None,
+                    media_path=all_photo_paths[0]
+                )
 
-        if pub_res and pub_res.get("status") == "success":
+        if pub_res and pub_res.get("status") in ["success", "interactive_swipe_puzzle"]:
             print(f"🎉 УСПЕШНО! Пост ({clean_format.upper()}) + медиа опубликованы в {channel}")
             await asyncio.sleep(1.5)
             await broadcaster._publish_via_bot_api(metrics_message, None)

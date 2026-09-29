@@ -521,6 +521,88 @@ class AchievementBroadcaster:
 
         return None
 
+    async def publish_interactive_puzzle_async(
+        self,
+        row_albums: List[List[str]],
+        caption: str = "",
+        reply_markup: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Публикует интерактивный 3-этажный свайп-пазл (Telegram Slot Machine) в канал:
+        Последовательно отправляет N альбомов (sendMediaGroup) подряд с минимальной задержкой:
+        - Ряды 1..(N-1): альбомы из горизонтальных полос без текста.
+        - Финальный ряд N: альбом из горизонтальных полос с прикрепленным текстом (caption) и кнопкой.
+        """
+        bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "7941793739:AAHOjT0j205qgHnQv8hN1B_3j0m_F3XlO4I")
+        ssl_ctx = ssl.create_default_context()
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = ssl.CERT_NONE
+
+        num_rows = len(row_albums)
+        print(f"[AchievementBroadcaster] 🧩 Публикация интерактивного {num_rows}-этажного свайп-пазла в {self.target_channel}...")
+
+        success_count = 0
+        try:
+            async with httpx.AsyncClient(verify=ssl_ctx, timeout=45.0) as client:
+                for r_idx, album_files in enumerate(row_albums):
+                    is_last_row = (r_idx == num_rows - 1)
+                    row_caption = caption if is_last_row else ""
+
+                    media_group = []
+                    files_dict = {}
+                    opened_files = []
+
+                    try:
+                        for f_idx, p in enumerate(album_files):
+                            attach_key = f"r{r_idx}_photo_{f_idx}"
+                            item = {
+                                "type": "photo",
+                                "media": f"attach://{attach_key}"
+                            }
+                            if f_idx == 0 and row_caption:
+                                item["caption"] = row_caption
+                                item["parse_mode"] = "HTML"
+                            media_group.append(item)
+                            f_h = open(p, "rb")
+                            opened_files.append(f_h)
+                            files_dict[attach_key] = f_h
+
+                        resp = await client.post(
+                            f"https://api.telegram.org/bot{bot_token}/sendMediaGroup",
+                            data={
+                                "chat_id": self.target_channel,
+                                "media": json.dumps(media_group)
+                            },
+                            files=files_dict
+                        )
+                        res_json = resp.json()
+                        if res_json.get("ok"):
+                            success_count += 1
+                            print(f"  ✅ Ряд {r_idx + 1}/{num_rows} успешно опубликован!")
+                        else:
+                            print(f"  ⚠️ Ошибка публикации ряда {r_idx + 1}: {res_json}")
+                    finally:
+                        for fh in opened_files:
+                            try:
+                                fh.close()
+                            except Exception:
+                                pass
+
+                    # Минимальная пауза между альбомами для сохранения строгой вертикальной последовательности
+                    await asyncio.sleep(0.3)
+
+            if success_count == num_rows:
+                return {
+                    "status": "success",
+                    "format": "interactive_swipe_puzzle",
+                    "rows_published": success_count,
+                    "channel": self.target_channel
+                }
+        except Exception as e:
+            print(f"[AchievementBroadcaster] Ошибка публикации свайп-пазла: {e}")
+
+        return {"status": "partial" if success_count > 0 else "error", "rows_published": success_count}
+
     async def broadcast_milestone_async(
         self,
         title: str,

@@ -397,6 +397,70 @@ class InteractivePuzzleSlicer:
 
         return manifest
 
+    @classmethod
+    def create_telegram_slot_machine_package(
+        cls,
+        image_paths: List[str],
+        output_dir: str,
+        num_rows: int = 3,
+        target_slice_size: Tuple[int, int] = (1200, 400),
+        scramble: bool = True
+    ) -> List[List[str]]:
+        """
+        Создает эталонный пакет для интерактивного Telegram Свайп-пазла (3-этажная рулетка):
+        1. Загружает 3-4 мастер-кадра.
+        2. Нарезает каждый на num_rows равных горизонтальных полос с соотношением 3:1 (1200x400).
+        3. Группирует полосы по строкам (Ряд 1, Ряд 2, Ряд 3).
+        4. Если scramble=True, циклически сдвигает полосы в рядах, чтобы пазл не был собран изначально.
+        5. Возвращает список списков путей: [ [row1_img1, ...], [row2_img1, ...], [row3_img1, ...] ].
+        """
+        if not Image:
+            logger.error("PIL (Pillow) не установлен!")
+            return []
+
+        valid_paths = [p for p in image_paths if os.path.exists(p)]
+        if not valid_paths:
+            return []
+
+        os.makedirs(output_dir, exist_ok=True)
+        num_variations = len(valid_paths)
+
+        # Открываем мастер-изображения и приводим к единому квадратному размеру (например, 1200x1200)
+        master_imgs = []
+        square_dim = target_slice_size[0]  # 1200
+        for p in valid_paths:
+            with Image.open(p) as img:
+                img_sq = ImageOps.fit(img, (square_dim, square_dim), Image.Resampling.LANCZOS)
+                master_imgs.append(img_sq)
+
+        row_height = square_dim // num_rows  # 400
+        target_w, target_h = target_slice_size
+
+        row_albums: List[List[str]] = [[] for _ in range(num_rows)]
+
+        for v_idx, img_sq in enumerate(master_imgs):
+            for r_idx in range(num_rows):
+                top_y = r_idx * row_height
+                bottom_y = (r_idx + 1) * row_height if r_idx < num_rows - 1 else square_dim
+                cropped = img_sq.crop((0, top_y, square_dim, bottom_y))
+                # Точная подгонка до целевых пикселей
+                slice_resized = ImageOps.fit(cropped, (target_w, target_h), Image.Resampling.LANCZOS)
+
+                slice_path = os.path.join(output_dir, f"row{r_idx + 1}_var{v_idx + 1}.jpg")
+                slice_resized.save(slice_path, "JPEG", quality=95)
+                row_albums[r_idx].append(os.path.abspath(slice_path))
+
+        # Перетасовка (Scramble): сдвигаем стартовые позиции в каждом ряду
+        if scramble and num_variations > 1:
+            scrambled_albums: List[List[str]] = []
+            for r_idx, album in enumerate(row_albums):
+                shift = (r_idx + 1) % len(album)
+                scrambled = album[shift:] + album[:shift]
+                scrambled_albums.append(scrambled)
+            return scrambled_albums
+
+        return row_albums
+
     def _generate_html_preview(self, saved_files: List[List[str]], html_path: str):
         """Создает интерактивную HTML-страничку со свайпами и стрелками (точная копия Telegram)."""
         import json
