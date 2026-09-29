@@ -290,26 +290,25 @@ async def run_pipeline(
             logger.warning(f"Локальный инференс Saiga LLM: {llm_err}")
 
         if not post_text:
-            bullets = ""
-            if rag_context:
-                facts = [f.strip() for f in rag_context.split("\n") if f.strip() and not f.startswith("#")]
-                bullets = "\n".join([f"▫️ {f}" for f in facts[:3]])
-
             post_text = (
-                f"<b>«{company_name}» открывает предзаказ на {actual_topic.lower()}</b> — выпекаем на живой закваске с длительной 72-часовой ферментацией теста.\n\n"
-                f"{bullets}\n\n"
+                f"<b>«{company_name}» открыла предзаказ на {actual_topic.lower()}</b> — выпекаем на живой закваске, поэтому мякиш остается воздушным и не черствеет больше недели.\n\n"
+                f"▫️ <b>Отборное фермерское масло</b> и вымоченный в роме изюм.\n"
+                f"▫️ <b>Натуральные цукаты</b> и бельгийская глазурь без искусственных добавок.\n\n"
             )
-            if quote_text:
-                post_text += f"<blockquote expandable>«{quote_text}»</blockquote>\n\n"
             if old_price and new_price:
                 post_text += f"🏷️ <b>Цена:</b> <s>{old_price}</s> <b>{new_price}</b>"
                 if promo_code:
                     post_text += f" по промокоду <code>{promo_code}</code>"
                 post_text += ".\n"
             if secret_spoiler:
-                post_text += f"🎁 <b>Подарок:</b> <tg-spoiler>{secret_spoiler}</tg-spoiler>\n"
+                post_text += f"🎁 <b>Подарок к заказу:</b> <tg-spoiler>{secret_spoiler}</tg-spoiler>.\n"
+            
             if clean_format in ["puzzle", "swipe_puzzle", "cryptex"]:
-                post_text += "\n<i>Листайте слои карусели, чтобы собрать свой идеальный кулич!</i>\n"
+                post_text += "\n<i>Листайте карусель, чтобы выбрать декор!</i>\n"
+            
+            if cta_url or cta_label:
+                post_text += f"\n👉 <a href=\"{cta_url or 'https://t.me/'}\">{cta_label or 'Забронировать кулич в боте'}</a>\n"
+                
             post_text += f"\n#{company_name.replace(' ', '')} #{niche.replace(' ', '')} #Пасха2026"
 
     # -------------------------------------------------------------
