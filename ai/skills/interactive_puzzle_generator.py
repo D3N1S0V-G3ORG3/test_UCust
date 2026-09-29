@@ -402,17 +402,17 @@ class InteractivePuzzleSlicer:
         cls,
         image_paths: List[str],
         output_dir: str,
-        num_rows: int = 3,
-        target_slice_size: Tuple[int, int] = (1200, 400),
-        scramble: bool = True
+        num_rows: int = 4,
+        target_slice_size: Tuple[int, int] = (1200, 300),
+        scramble: bool = True,
+        use_anatomical_seams: bool = True
     ) -> List[List[str]]:
         """
-        Создает эталонный пакет для интерактивного Telegram Свайп-пазла (3-этажная рулетка):
-        1. Загружает 3-4 мастер-кадра.
-        2. Нарезает каждый на num_rows равных горизонтальных полос с соотношением 3:1 (1200x400).
-        3. Группирует полосы по строкам (Ряд 1, Ряд 2, Ряд 3).
-        4. Если scramble=True, циклически сдвигает полосы в рядах, чтобы пазл не был собран изначально.
-        5. Возвращает список списков путей: [ [row1_img1, ...], [row2_img1, ...], [row3_img1, ...] ].
+        Создает 4-этажный пакет альбомов для интерактивного Telegram Свайп-пазла:
+        - Ряд 1 (Y: 0-22%): Атмосфера / Верх ветвей вербы / Окно (до верхушки кулича)
+        - Ряд 2 (Y: 22-44%): Купол / Белоснежная глазурь / Разноцветная посыпка / Золото
+        - Ряд 3 (Y: 44-72%): Форма для выпечки (капсула) / Капли глазури / Верхняя тарелка подставки
+        - Ряд 4 (Y: 72-100%): Ножка подставки / Стол / Пиала с крашеными яйцами / Декор
         """
         if not Image:
             logger.error("PIL (Pillow) не установлен!")
@@ -425,7 +425,7 @@ class InteractivePuzzleSlicer:
         os.makedirs(output_dir, exist_ok=True)
         num_variations = len(valid_paths)
 
-        # Открываем мастер-изображения и приводим к единому квадратному размеру (например, 1200x1200)
+        # Открываем мастер-изображения и приводим к единому квадратному размеру (1200x1200)
         master_imgs = []
         square_dim = target_slice_size[0]  # 1200
         for p in valid_paths:
@@ -433,17 +433,29 @@ class InteractivePuzzleSlicer:
                 img_sq = ImageOps.fit(img, (square_dim, square_dim), Image.Resampling.LANCZOS)
                 master_imgs.append(img_sq)
 
-        row_height = square_dim // num_rows  # 400
         target_w, target_h = target_slice_size
+
+        # Анатомические швы по 4 уровням объекта
+        if use_anatomical_seams and num_rows == 4:
+            seams = [
+                (0.00, 0.22),  # Ряд 1: Фон / Окно / Верба
+                (0.22, 0.44),  # Ряд 2: Купол глазури / Посыпка
+                (0.44, 0.72),  # Ряд 3: Тело кулича / Капсула / Верх подставки
+                (0.72, 1.00)   # Ряд 4: Ножка подставки / Стол / Яйца
+            ]
+        else:
+            seams = [(i / num_rows, (i + 1) / num_rows) for i in range(num_rows)]
 
         row_albums: List[List[str]] = [[] for _ in range(num_rows)]
 
         for v_idx, img_sq in enumerate(master_imgs):
-            for r_idx in range(num_rows):
-                top_y = r_idx * row_height
-                bottom_y = (r_idx + 1) * row_height if r_idx < num_rows - 1 else square_dim
+            for r_idx, (top_r, bot_r) in enumerate(seams):
+                top_y = int(round(square_dim * top_r))
+                bottom_y = int(round(square_dim * bot_r))
+                if bot_r >= 0.999:
+                    bottom_y = square_dim
+
                 cropped = img_sq.crop((0, top_y, square_dim, bottom_y))
-                # Точная подгонка до целевых пикселей
                 slice_resized = ImageOps.fit(cropped, (target_w, target_h), Image.Resampling.LANCZOS)
 
                 slice_path = os.path.join(output_dir, f"row{r_idx + 1}_var{v_idx + 1}.jpg")

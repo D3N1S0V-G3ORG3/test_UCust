@@ -453,22 +453,23 @@ async def run_pipeline(
         except Exception as mos_err:
             logger.warning(f"Сборка мозаики 2x2: {mos_err}")
 
-    # 4.3 Сборка интерактивного свайп-пазла (Telegram Slot Machine)
+    # 4.3 Сборка интерактивного 4-этажного свайп-пазла (Telegram Slot Machine)
     puzzle_row_albums: List[List[str]] = []
     if clean_format in ["puzzle", "swipe_puzzle", "cryptex"] and all_photo_paths:
         try:
             from skills.interactive_puzzle_generator import InteractivePuzzleSlicer
-            print(f"  🧩 Нарезка {len(all_photo_paths)} мастер-кадров на 3-этажный свайп-пазл Telegram (соотношение 3:1)...")
+            print(f"  🧩 Нарезка {len(all_photo_paths)} мастер-кадров на 4-этажный свайп-пазл Telegram (соотношение 4:1)...")
             out_dir = os.path.join(os.path.dirname(all_photo_paths[0]), "puzzle_slot_machine")
             puzzle_row_albums = InteractivePuzzleSlicer.create_telegram_slot_machine_package(
                 image_paths=all_photo_paths,
                 output_dir=out_dir,
-                num_rows=3,
-                target_slice_size=(1200, 400),
-                scramble=True
+                num_rows=4,
+                target_slice_size=(1200, 300),
+                scramble=True,
+                use_anatomical_seams=True
             )
             if puzzle_row_albums:
-                print(f"  ✅ 3 ряда свайп-пазла сформированы (по {len(puzzle_row_albums[0])} полос в каждом ряду)!")
+                print(f"  ✅ 4 ряда свайп-пазла сформированы (по {len(puzzle_row_albums[0])} полос в каждом ряду)!")
         except Exception as slice_err:
             logger.warning(f"Нарезка пазла: {slice_err}")
 
