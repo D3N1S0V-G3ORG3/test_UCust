@@ -12,8 +12,13 @@
 
 from __future__ import annotations
 import re
-from typing import Dict, Any, List, Optional, Tuple, Union
-from skills.expandable_blockquote import ExpandableBlockquoteFormatter
+try:
+    from ai.skills.expandable_blockquote import ExpandableBlockquoteFormatter
+except ImportError:
+    try:
+        from skills.expandable_blockquote import ExpandableBlockquoteFormatter
+    except ImportError:
+        from .expandable_blockquote import ExpandableBlockquoteFormatter
 
 
 class TelegramRichPostFormatter:
