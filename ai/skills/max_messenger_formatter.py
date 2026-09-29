@@ -53,10 +53,10 @@ class MaxMessengerFormatter:
         # 4. Обработка ссылок: если в тексте несколько ссылок, оставляем только одну главную
         # Изолируем CTA в самом низу
         cta_link_text = ""
-        link_match = re.search(r'\[([^\]]+)\]\(([^\)]+)\)', res)
+        link_match = re.search(r'(?:👉\s*)?\[([^\]]+)\]\(([^\)]+)\)', res)
         if link_match:
             cta_link_text = f"👉 [{link_match.group(1)}]({link_match.group(2)})"
-            res = res[:link_match.start()].strip()
+            res = res[:link_match.start()].rstrip("👉 \t\n")
         elif cta_url:
             cta_link_text = f"👉 [{cta_title}]({cta_url})"
 
@@ -73,9 +73,38 @@ class MaxMessengerFormatter:
         if len(push_preview) > 70:
             push_preview = push_preview[:67] + "..."
 
+        # 7. Генерация чистого SMS-фоллбэка (если получатель оффлайн)
+        sms_text = cls.strip_markdown_for_sms(res.strip())
+
         return {
             "message_text": res.strip(),
+            "sms_fallback_text": sms_text,
             "push_preview": push_preview,
             "char_count": len(res.strip()),
             "is_within_limit": len(res.strip()) <= 400
         }
+
+    @classmethod
+    def strip_markdown_for_sms(cls, text: str) -> str:
+        """
+        Преобразует Markdown-сообщение в чистый SMS-текст для GSM-доставки при оффлайн-получателе:
+        - Преобразует [Текст](https://...) в "Текст: https://..."
+        - Снимает **жирный**, `код`, _курсив_
+        - Сохраняет читабельность в стандартных SMS-клиентах без поддержки разметки
+        """
+        if not text:
+            return ""
+
+        res = text.strip()
+
+        # 1. Ссылки Markdown [Текст](URL) -> Текст: URL
+        res = re.sub(r'\[([^\]]+)\]\((https?://[^\)]+)\)', r'\1: \2', res)
+
+        # 2. Снятие Markdown форматирования (**жирный**, `код`, _курсив_)
+        res = re.sub(r'\*\*(.+?)\*\*', r'\1', res)
+        res = re.sub(r'`([^`]+?)`', r'\1', res)
+        res = re.sub(r'_(.+?)_', r'\1', res)
+
+        # 3. Нормализация пробелов и переносов
+        res = re.sub(r'[ \t]{2,}', ' ', res)
+        return res.strip()
