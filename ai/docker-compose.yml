@@ -86,7 +86,7 @@ services:
       - ucust_internal_net
 
   # ----------------------------------------------------------------------------
-  # 4. Celery CPU Worker (Queue: ucust_ai_queue)
+  # 4. Celery CPU Worker (Queues: custom, business, start)
   # Ingests Web, Telegram, Docs, RAG Search, and Saiga LLM text generation
   # ----------------------------------------------------------------------------
   celery-worker-cpu:
@@ -95,7 +95,7 @@ services:
       dockerfile: Dockerfile
     container_name: ucust_celery_worker_cpu
     restart: unless-stopped
-    command: celery -A celery_tasks.celery_app worker --loglevel=info --concurrency=2 -Q ucust_ai_queue
+    command: celery -A celery_tasks.celery_app worker --loglevel=info --concurrency=2 -Q custom,business,start
     depends_on:
       redis:
         condition: service_healthy
@@ -115,7 +115,7 @@ services:
       - ucust_internal_net
 
   # ----------------------------------------------------------------------------
-  # 5. Celery GPU Worker (Queue: ucust_gpu_render)
+  # 5. Celery GPU Worker (Queues: custom, business, start)
   # Lazy Rendering & ComfyUI Prompt API execution
   # ----------------------------------------------------------------------------
   celery-worker-gpu:
@@ -124,7 +124,7 @@ services:
       dockerfile: Dockerfile
     container_name: ucust_celery_worker_gpu
     restart: unless-stopped
-    command: celery -A celery_tasks.celery_app worker --loglevel=info --concurrency=1 -Q ucust_gpu_render
+    command: celery -A celery_tasks.celery_app worker --loglevel=info --concurrency=1 -Q custom,business,start
     depends_on:
       redis:
         condition: service_healthy

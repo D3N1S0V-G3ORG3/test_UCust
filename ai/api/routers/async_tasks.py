@@ -15,7 +15,7 @@ try:
         AsyncTaskAcceptedResponse
     )
     from api.dependencies.auth import get_current_tenant
-    from celery_tasks import celery_app
+    from celery_tasks import celery_app, get_queue_for_tier, QUEUE_BUSINESS
 except ImportError:
     from ai.models.api_models import (
         OnboardingAsyncRequest,
@@ -23,7 +23,7 @@ except ImportError:
         AsyncTaskAcceptedResponse
     )
     from ai.api.dependencies.auth import get_current_tenant
-    from ai.celery_tasks import celery_app
+    from ai.celery_tasks import celery_app, get_queue_for_tier, QUEUE_BUSINESS
 
 logger = logging.getLogger("AsyncTasksRouter")
 
@@ -42,9 +42,10 @@ async def trigger_onboarding_task(
 ):
     """
     Асинхронный сбор данных (Telegram, Website, PDF) и извлечение Brand DNA.
-    Задача отправляется в очередь CPU-воркера 'ucust_ai_queue'.
+    Задача отправляется в очередь соответствующего тарифа (start / business / custom).
     """
     payload_dict = request.model_dump(mode="json")
+    target_queue = get_queue_for_tier(payload_dict.get("tier", "business"))
     
     task = celery_app.send_task(
         "celery_tasks.onboard_brand_task",
@@ -55,17 +56,18 @@ async def trigger_onboarding_task(
             "telegram_channel": payload_dict.get("telegram_channel"),
             "website_url": payload_dict.get("website_url"),
             "document_paths": payload_dict.get("document_paths"),
-            "raw_notes": payload_dict.get("raw_notes")
+            "raw_notes": payload_dict.get("raw_notes"),
+            "callback_url": payload_dict.get("callback_url")
         },
-        queue="ucust_ai_queue"
+        queue=target_queue
     )
     
-    logger.info(f"📤 [Router] Задача онбординга поставлена в очередь (task_id={task.id}, tenant={tenant_id})")
+    logger.info(f"📤 [Router] Задача онбординга поставлена в очередь '{target_queue}' (task_id={task.id}, tenant={tenant_id})")
     
     return AsyncTaskAcceptedResponse(
         task_id=task.id,
         tenant_id=tenant_id,
-        queue_name="ucust_ai_queue",
+        queue_name=target_queue,
         estimated_wait_seconds=15.0
     )
 
@@ -82,26 +84,29 @@ async def trigger_content_generation_task(
 ):
     """
     Асинхронная генерация контент-плана или черновика поста с нулевой стоимостью GPU.
-    Задача отправляется в очередь CPU-воркера 'ucust_ai_queue'.
+    Задача отправляется в очередь соответствующего тарифа (start / business / custom).
     """
     payload_dict = request.model_dump(mode="json")
+    tier_val = payload_dict.get("tier", "business")
+    target_queue = get_queue_for_tier(tier_val)
     
     task = celery_app.send_task(
         "celery_tasks.generate_post_draft_task",
         kwargs={
             "tenant_id": tenant_id,
-            "tier": payload_dict.get("tier", "pro"),
+            "tier": tier_val,
             "industry": payload_dict.get("industry", "b2b_corporate"),
-            "topic": payload_dict.get("prompt", "Обзор")
+            "topic": payload_dict.get("prompt", "Обзор"),
+            "callback_url": payload_dict.get("callback_url")
         },
-        queue="ucust_ai_queue"
+        queue=target_queue
     )
     
-    logger.info(f"📤 [Router] Задача генерации поставлена в очередь (task_id={task.id}, tenant={tenant_id})")
+    logger.info(f"📤 [Router] Задача генерации поставлена в очередь '{target_queue}' (task_id={task.id}, tenant={tenant_id})")
     
     return AsyncTaskAcceptedResponse(
         task_id=task.id,
         tenant_id=tenant_id,
-        queue_name="ucust_ai_queue",
+        queue_name=target_queue,
         estimated_wait_seconds=2.5
     )

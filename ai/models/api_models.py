@@ -18,13 +18,14 @@ class OnboardingAsyncRequest(BaseModel):
     website_url: Optional[HttpUrl] = Field(None, description="URL сайта компании")
     document_paths: Optional[List[str]] = Field(default_factory=list, description="Пути к загруженным документам")
     raw_notes: Optional[str] = Field(None, description="Дополнительные заметки и вводные")
+    tier: SubscriptionTier = Field(default=SubscriptionTier.BUSINESS, description="Тарифный план (start/business/custom)")
     callback_url: Optional[HttpUrl] = Field(None, description="URL для Webhook Push по завершении")
 
 
 class ContentGenerateAsyncRequest(BaseModel):
     """Схема запроса на асинхронную генерацию контента."""
     prompt: str = Field(..., min_length=3, description="Тема или промпт для генерации")
-    tier: SubscriptionTier = Field(default=SubscriptionTier.PRO, description="Тарифный план (starter/pro/enterprise)")
+    tier: SubscriptionTier = Field(default=SubscriptionTier.BUSINESS, description="Тарифный план (start/business/custom)")
     industry: IndustryArchetype = Field(default=IndustryArchetype.B2B_CORPORATE, description="Архетип индустрии")
     rubric: Optional[str] = Field(default="general", description="Рубрика поста")
     callback_url: Optional[HttpUrl] = Field(None, description="URL для Webhook Push по завершении")

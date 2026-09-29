@@ -24,7 +24,7 @@ services:
       - ENVIRONMENT=production
       - LOG_LEVEL=INFO
       - DEV_SIMULATION_MODE=false
-    command: celery -A celery_tasks.celery_app worker --loglevel=info --concurrency=4 -Q ucust_ai_queue
+    command: celery -A celery_tasks.celery_app worker --loglevel=info --concurrency=4 -Q custom,business,start
 
   # ----------------------------------------------------------------------------
   # Production Celery GPU Worker (NVIDIA GPU Pass-Through for Tensor Renders)
@@ -39,7 +39,7 @@ services:
       - DEV_SIMULATION_MODE=false
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-    command: celery -A celery_tasks.celery_app worker --loglevel=info --concurrency=1 -Q ucust_gpu_render
+    command: celery -A celery_tasks.celery_app worker --loglevel=info --concurrency=1 -Q custom,business,start
     deploy:
       resources:
         reservations:

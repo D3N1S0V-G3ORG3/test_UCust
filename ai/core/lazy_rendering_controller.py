@@ -18,9 +18,35 @@ logger = logging.getLogger("LazyRenderingController")
 
 
 class SubscriptionTier(str, Enum):
-    STARTER = "starter"
-    PRO = "pro"
-    ENTERPRISE = "enterprise"
+    START = "start"
+    BUSINESS = "business"
+    CUSTOM = "custom"
+
+    # Backward compatibility aliases
+    STARTER = "start"
+    PRO = "business"
+    ENTERPRISE = "custom"
+
+    @classmethod
+    def normalize(cls, val: Any) -> "SubscriptionTier":
+        if isinstance(val, cls):
+            return val
+        s = str(val).lower().strip()
+        mapping = {
+            "start": cls.START,
+            "starter": cls.START,
+            "старт": cls.START,
+            "business": cls.BUSINESS,
+            "бизнес": cls.BUSINESS,
+            "pro": cls.BUSINESS,
+            "custom": cls.CUSTOM,
+            "кастомный": cls.CUSTOM,
+            "свой": cls.CUSTOM,
+            "свой тариф": cls.CUSTOM,
+            "enterprise": cls.CUSTOM,
+            "vip": cls.CUSTOM,
+        }
+        return mapping.get(s, cls.BUSINESS)
 
 
 class IndustryArchetype(str, Enum):

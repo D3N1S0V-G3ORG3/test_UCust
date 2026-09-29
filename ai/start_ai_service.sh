@@ -204,7 +204,7 @@ if $PYTHON_CMD -c "import celery" 2>/dev/null && [ -f "$AI_DIR/celery_tasks.py" 
     CELERY_LOG="$AI_DIR/celery.log"
     (
         cd "$AI_DIR"
-        exec "$PYTHON_CMD" -m celery -A celery_tasks worker --loglevel=info -Q ucust_ai_queue,ucust_gpu_render --concurrency=2 > "$CELERY_LOG" 2>&1
+        exec "$PYTHON_CMD" -m celery -A celery_tasks worker --loglevel=info -Q custom,business,start --concurrency=2 > "$CELERY_LOG" 2>&1
     ) &
     CELERY_PID=$!
     CHILD_PIDS+=("$CELERY_PID")

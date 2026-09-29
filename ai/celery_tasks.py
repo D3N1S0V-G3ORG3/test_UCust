@@ -2,11 +2,16 @@
 File: ai/celery_tasks.py
 Celery Worker Configuration & Distributed Task Bus for UCust AI.
 
-Development Environment (Low-spec / 8GB RAM / CPU):
-    celery -A celery_tasks.celery_app worker --loglevel=info --concurrency=1 -Q ucust_ai_queue
+Очереди задач по приоритету тарифов:
+    • custom   (Свой / VIP тариф)      — наивысший приоритет, выделенные воркеры
+    • business (Бизнес / Стандарт)     — высокий приоритет, коммерческая генерация
+    • start    (Старт / Базовый)       — стандартный приоритет, фоновая обработка
 
-Production Environment (1-2x A100/H100 80GB VRAM, 128GB RAM):
-    celery -A celery_tasks.celery_app worker --loglevel=info --concurrency=4 -Q ucust_ai_queue,ucust_gpu_render
+Development Environment (Low-spec / 8GB RAM / CPU):
+    celery -A celery_tasks.celery_app worker --loglevel=info --concurrency=1 -Q custom,business,start
+
+Production Environment (Multi-tier Priority Queues):
+    celery -A celery_tasks.celery_app worker --loglevel=info --concurrency=4 -Q custom,business,start
 """
 
 from __future__ import annotations
@@ -24,6 +29,33 @@ except ImportError:
 
 logger = logging.getLogger("CeleryTasks")
 
+# Названия очередей по приоритету тарифов
+QUEUE_START = "start"          # Старт (базовый тариф)
+QUEUE_BUSINESS = "business"    # Бизнес (коммерческий тариф)
+QUEUE_CUSTOM = "custom"        # Свой тариф / Кастомный (VIP)
+
+# Маппинг тарифов к очередям
+TIER_QUEUES: Dict[str, str] = {
+    "start": QUEUE_START,
+    "starter": QUEUE_START,
+    "старт": QUEUE_START,
+    "business": QUEUE_BUSINESS,
+    "бизнес": QUEUE_BUSINESS,
+    "pro": QUEUE_BUSINESS,
+    "custom": QUEUE_CUSTOM,
+    "кастомный": QUEUE_CUSTOM,
+    "свой": QUEUE_CUSTOM,
+    "свой тариф": QUEUE_CUSTOM,
+    "enterprise": QUEUE_CUSTOM,
+    "vip": QUEUE_CUSTOM,
+}
+
+def get_queue_for_tier(tier: Optional[str] = None) -> str:
+    """Определяет целевую очередь Celery на основе тарифа клиента."""
+    if not tier:
+        return QUEUE_BUSINESS
+    return TIER_QUEUES.get(str(tier).lower().strip(), QUEUE_BUSINESS)
+
 # Настройка брокера и бэкенда результатов (Redis)
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
@@ -37,8 +69,11 @@ if HAS_CELERY:
         timezone="UTC",
         enable_utc=True,
         task_routes={
-            "celery_tasks.render_post_task": {"queue": "ucust_gpu_render"},
-            "celery_tasks.*": {"queue": "ucust_ai_queue"},
+            "celery_tasks.render_post_task": {"queue": QUEUE_BUSINESS},
+            "celery_tasks.generate_post_draft_task": {"queue": QUEUE_BUSINESS},
+            "celery_tasks.onboard_brand_task": {"queue": QUEUE_BUSINESS},
+            "celery_tasks.audit_post_task": {"queue": QUEUE_BUSINESS},
+            "celery_tasks.*": {"queue": QUEUE_BUSINESS},
         },
         worker_prefetch_multiplier=1,
         task_acks_late=True,
@@ -221,7 +256,7 @@ def generate_post_draft_task(
     profile: Optional[Dict[str, Any]] = None,
     recent_posts: Optional[List[str]] = None,
     aspect_ratio: str = "1:1",
-    tier: str = "pro",
+    tier: str = "business",
     industry: str = "b2b_corporate",
     callback_url: Optional[str] = None,
     dev_simulation_mode: bool = True

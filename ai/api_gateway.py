@@ -1608,10 +1608,7 @@ async def create_content_draft(payload: ContentDraftApiRequest):
     except ValueError:
         industry_enum = IndustryArchetype.B2C_LIFESTYLE
 
-    try:
-        tier_enum = SubscriptionTier(payload.tier.lower())
-    except ValueError:
-        tier_enum = SubscriptionTier.PRO
+    tier_enum = SubscriptionTier.normalize(payload.tier) if payload.tier else SubscriptionTier.BUSINESS
 
     brand = BrandProfile(
         brand_id=payload.brand_id,
@@ -1665,10 +1662,7 @@ async def generate_week_plan_drafts(payload: WeekPlanApiRequest):
     except ValueError:
         industry_enum = IndustryArchetype.B2C_LIFESTYLE
 
-    try:
-        tier_enum = SubscriptionTier(payload.tier.lower())
-    except ValueError:
-        tier_enum = SubscriptionTier.PRO
+    tier_enum = SubscriptionTier.normalize(payload.tier) if payload.tier else SubscriptionTier.BUSINESS
 
     brand = BrandProfile(
         brand_id=payload.brand_id,

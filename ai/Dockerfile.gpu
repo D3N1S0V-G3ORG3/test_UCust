@@ -46,4 +46,4 @@ COPY . /app
 
 EXPOSE 8000
 
-CMD ["celery", "-A", "celery_tasks.celery_app", "worker", "--loglevel=info", "--concurrency=1", "-Q", "ucust_gpu_render"]
+CMD ["celery", "-A", "celery_tasks.celery_app", "worker", "--loglevel=info", "--concurrency=1", "-Q", "custom,business,start"]

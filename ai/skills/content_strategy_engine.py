@@ -39,9 +39,14 @@ except ImportError:
     except ImportError:
         # Fallback Enums if imported standalone
         class SubscriptionTier(str, Enum):
-            STARTER = "starter"
-            PRO = "pro"
-            ENTERPRISE = "enterprise"
+            START = "start"
+            BUSINESS = "business"
+            CUSTOM = "custom"
+
+            # Backward compatibility aliases
+            STARTER = "start"
+            PRO = "business"
+            ENTERPRISE = "custom"
 
         class IndustryArchetype(str, Enum):
             B2C_LIFESTYLE = "b2c_lifestyle"
@@ -139,22 +144,23 @@ def get_available_formats(tier: SubscriptionTier) -> List[ContentFormat]:
     Возвращает разрешенные форматы генерации на основе тарифа подписки.
     Предотвращает постановку тяжелых задач (каруселей/пазлов) от базовых пользователей.
     """
+    tier_norm = SubscriptionTier.normalize(tier) if hasattr(SubscriptionTier, "normalize") else tier
     tier_limits = {
-        SubscriptionTier.STARTER: [
+        SubscriptionTier.START: [
             ContentFormat.SINGLE_SHOT
         ],
-        SubscriptionTier.PRO: [
+        SubscriptionTier.BUSINESS: [
             ContentFormat.SINGLE_SHOT, 
             ContentFormat.CAROUSEL_LIGHT
         ],
-        SubscriptionTier.ENTERPRISE: [
+        SubscriptionTier.CUSTOM: [
             ContentFormat.SINGLE_SHOT, 
             ContentFormat.CAROUSEL_LIGHT, 
             ContentFormat.CAROUSEL_HEAVY, 
             ContentFormat.CRYPTEX_PUZZLE
         ]
     }
-    return tier_limits.get(tier, [ContentFormat.SINGLE_SHOT])
+    return tier_limits.get(tier_norm, [ContentFormat.SINGLE_SHOT])
 
 
 # ==============================================================================
