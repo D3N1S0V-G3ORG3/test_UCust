@@ -6,9 +6,9 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class CopywritingFramework(str, Enum):
@@ -321,4 +321,89 @@ class PendingPostSchema(BaseModel):
     local_audio_path: Optional[str] = Field(None, description="Local server file path for audio")
     uniqueness_score: float = Field(default=1.0, description="Vector uniqueness score")
     duplicates_found: bool = Field(default=False, description="Duplicate detection flag")
+
+
+# Каноническая карта алиасов каналов для Anti-Corruption Layer
+CHANNEL_CANONICAL_MAP: Dict[str, str] = {
+    "telegram": "telegram",
+    "tg": "telegram",
+    "телеграм": "telegram",
+    "телеграм-канал": "telegram",
+    "vk": "vk",
+    "vkontakte": "vk",
+    "вк": "vk",
+    "вконтакте": "vk",
+    "ok": "ok",
+    "odnoklassniki": "ok",
+    "ок": "ok",
+    "одноклассники": "ok",
+    "max_messenger": "max_messenger",
+    "max": "max_messenger",
+    "messenger": "max_messenger",
+    "мессенджер": "max_messenger",
+    "instagram": "instagram",
+    "inst": "instagram",
+    "инстаграм": "instagram",
+}
+
+
+class ActiveChannelsDTO(BaseModel):
+    """
+    Anti-Corruption Layer (ACL) DTO для строгой валидации и нормализации подключенных каналов.
+    Преобразует любые гетерогенные входные структуры (словари флагов, списки объектов/строк, URL-мапы)
+    в строго детерминированный массив канонических строк List[str].
+    """
+    channels: List[str] = Field(default_factory=list, description="Детерминированный список нормализованных каналов")
+
+    @field_validator("channels", mode="before")
+    @classmethod
+    def normalize_channels(cls, raw_data: Any) -> List[str]:
+        if raw_data is None:
+            return []
+
+        extracted: List[str] = []
+
+        if isinstance(raw_data, dict):
+            # Фильтрация словаря: оставляем только истинные / активные каналы
+            for ch_name, ch_val in raw_data.items():
+                if isinstance(ch_val, bool):
+                    if ch_val:
+                        extracted.append(str(ch_name))
+                elif isinstance(ch_val, dict):
+                    if ch_val.get("is_active", True) and not ch_val.get("disabled", False):
+                        extracted.append(str(ch_name))
+                elif isinstance(ch_val, str):
+                    if ch_val.strip() and ch_val.lower() not in ("false", "0", "none", "null", "disabled"):
+                        extracted.append(str(ch_name))
+                elif isinstance(ch_val, (int, float)):
+                    if ch_val > 0:
+                        extracted.append(str(ch_name))
+        elif isinstance(raw_data, (list, tuple, set)):
+            for item in raw_data:
+                if isinstance(item, str):
+                    if item.strip():
+                        extracted.append(item.strip())
+                elif isinstance(item, dict):
+                    name = item.get("name") or item.get("platform") or item.get("channel")
+                    if name and item.get("is_active", True):
+                        extracted.append(str(name))
+                else:
+                    raise ValueError(f"Unsupported item in channels sequence: {type(item)} ({item})")
+        elif isinstance(raw_data, str):
+            if "," in raw_data:
+                extracted.extend([s.strip() for s in raw_data.split(",") if s.strip()])
+            elif raw_data.strip():
+                extracted.append(raw_data.strip())
+        else:
+            raise ValueError(f"Unsupported channels raw data type: {type(raw_data)} (expected list, dict, or str)")
+
+        # Нормализация и дедупликация с сохранением порядка
+        canonical_list: List[str] = []
+        for ch in extracted:
+            clean = ch.lower().strip()
+            norm = CHANNEL_CANONICAL_MAP.get(clean, clean)
+            if norm and norm not in canonical_list:
+                canonical_list.append(norm)
+
+        return canonical_list
 

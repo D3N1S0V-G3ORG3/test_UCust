@@ -17,6 +17,7 @@ try:
         QuestionnaireStep4,
         QuestionnaireStep5,
         UserQuestionnaire,
+        ActiveChannelsDTO,
     )
     from storage.db import Database
     from storage.models import ContentTask, UserProfile
@@ -28,6 +29,7 @@ except ImportError:
         QuestionnaireStep4,
         QuestionnaireStep5,
         UserQuestionnaire,
+        ActiveChannelsDTO,
     )
     from ai.storage.db import Database
     from ai.storage.models import ContentTask, UserProfile
@@ -133,64 +135,21 @@ def get_active_connected_channels(
     profile_data: Optional[Dict[str, Any]] = None
 ) -> List[str]:
     """
-    Извлекает список только реально подключенных и активных каналов (is_active=True):
-    1. Проверяет переданный profile_data (connected_channels / platforms / social_links).
-    2. Если данных нет, запрашивает UserProfile / ProjectMetadata из базы данных.
-    3. Возвращает список идентификаторов каналов (например: ['telegram', 'vk']).
-    4. По умолчанию возвращает ['telegram'].
+    Извлекает список только реально подключенных и активных каналов (is_active=True).
+    Использует Anti-Corruption Layer (ActiveChannelsDTO) для строгой валидации и нормализации.
+    Гарантирует детерминированный контракт List[str] с фоллбэком на ['telegram'].
     """
-    active_channels: List[str] = []
+    raw_sources: List[Any] = []
 
-    # 1. Анализ переданного словаря профиля
-    if profile_data:
-        # Прямой список target_channels
-        if "target_channels" in profile_data and isinstance(profile_data["target_channels"], list):
-            return [c.lower() for c in profile_data["target_channels"] if c]
+    # 1. Сбор сырых данных из переданного словаря профиля
+    if profile_data and isinstance(profile_data, dict):
+        for key in ("target_channels", "connected_channels", "social_networks", "platforms", "social_links"):
+            val = profile_data.get(key)
+            if val is not None:
+                raw_sources.append(val)
 
-        # Словарь или список connected_channels / social_networks
-        cc = profile_data.get("connected_channels") or profile_data.get("social_networks")
-        if isinstance(cc, dict):
-            for ch_name, ch_info in cc.items():
-                if isinstance(ch_info, dict) and ch_info.get("is_active", True):
-                    active_channels.append(ch_name.lower())
-                elif isinstance(ch_info, bool) and ch_info:
-                    active_channels.append(ch_name.lower())
-                elif isinstance(ch_info, str) and ch_info:
-                    active_channels.append(ch_name.lower())
-        elif isinstance(cc, list):
-            for ch in cc:
-                if isinstance(ch, str) and ch.lower() not in active_channels:
-                    active_channels.append(ch.lower())
-
-        # Поле platforms в проекте
-        platforms = profile_data.get("platforms")
-        if isinstance(platforms, list):
-            for p in platforms:
-                if isinstance(p, str) and p.lower() not in active_channels:
-                    active_channels.append(p.lower())
-        elif isinstance(platforms, dict):
-            for p_name, p_val in platforms.items():
-                if p_val and p_name.lower() not in active_channels:
-                    active_channels.append(p_name.lower())
-
-        # social_links из анкеты
-        social_links = profile_data.get("social_links")
-        if isinstance(social_links, dict):
-            for s_name, s_val in social_links.items():
-                if s_val and s_name.lower() not in active_channels:
-                    # Нормализуем имена каналов
-                    norm_name = s_name.lower()
-                    if norm_name in ["tg", "telegram", "телеграм"]:
-                        active_channels.append("telegram")
-                    elif norm_name in ["vk", "vkontakte", "вк", "вконтакте"]:
-                        active_channels.append("vk")
-                    elif norm_name in ["ok", "odnoklassniki", "ок", "одноклассники"]:
-                        active_channels.append("ok")
-                    elif norm_name in ["max", "messenger", "max_messenger", "мессенджер"]:
-                        active_channels.append("max_messenger")
-
-    # 2. Запрос к базе данных, если список пуст
-    if not active_channels and database and user_id:
+    # 2. Сбор сырых данных из базы данных, если в profile_data ничего не найдено
+    if not raw_sources and database and user_id:
         session = database.get_session()
         try:
             query = session.query(UserProfile)
@@ -199,23 +158,28 @@ def get_active_connected_channels(
             else:
                 profile = query.filter(UserProfile.external_user_id == str(user_id)).first()
 
-            if profile and profile.social_links:
-                for s_name, s_val in profile.social_links.items():
-                    if s_val:
-                        norm_name = s_name.lower()
-                        if norm_name in ["tg", "telegram"] and "telegram" not in active_channels:
-                            active_channels.append("telegram")
-                        elif norm_name in ["vk", "vkontakte"] and "vk" not in active_channels:
-                            active_channels.append("vk")
-                        elif norm_name in ["ok", "odnoklassniki"] and "ok" not in active_channels:
-                            active_channels.append("ok")
-                        elif norm_name in ["max", "messenger", "max_messenger"] and "max_messenger" not in active_channels:
-                            active_channels.append("max_messenger")
+            if profile:
+                if profile.social_links:
+                    raw_sources.append(profile.social_links)
+                if hasattr(profile, "connected_channels") and getattr(profile, "connected_channels"):
+                    raw_sources.append(getattr(profile, "connected_channels"))
+                if hasattr(profile, "platforms") and getattr(profile, "platforms"):
+                    raw_sources.append(getattr(profile, "platforms"))
         except Exception:
             pass
         finally:
             session.close()
 
-    # Дедупликация и фоллбэк
-    clean_channels = list(dict.fromkeys(active_channels))
-    return clean_channels if clean_channels else ["telegram"]
+    # 3. Anti-Corruption Layer: строгая валидация и нормализация через ActiveChannelsDTO
+    collected_channels: List[str] = []
+    for raw_data in raw_sources:
+        try:
+            dto = ActiveChannelsDTO(channels=raw_data)
+            for ch in dto.channels:
+                if ch not in collected_channels:
+                    collected_channels.append(ch)
+        except Exception:
+            # Изолируем поврежденный источник и продолжаем валидацию остальных
+            continue
+
+    return collected_channels if collected_channels else ["telegram"]
