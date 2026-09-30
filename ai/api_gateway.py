@@ -1385,6 +1385,11 @@ async def ingest_knowledge_base(request: RAGIngestRequest):
             )
         )
     indexed_count = await rag_pipeline.ingest_documents_async(docs)
+    return {
+        "status": "success",
+        "indexed_count": indexed_count,
+        "message": f"Успешно проиндексировано {indexed_count} документов в Clean RAG"
+    }
 # -------------------------------------------------------------------
 # 3.1 УДОБНЫЕ АЛИАСЫ ДЛЯ ФРОНТЕНДА И СБОРА ДАННЫХ (CONVENIENCE ALIASES)
 # -------------------------------------------------------------------
