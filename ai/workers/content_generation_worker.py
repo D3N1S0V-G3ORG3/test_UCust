@@ -1,12 +1,11 @@
 """
 File: ai/workers/content_generation_worker.py
-Stateless Event-Driven воркер с Watchdog TTL (защита от Spinning Poison Pill),
-Write-Ahead State коммитом, паттерном Stateful Tombstone и маршрутизацией в DLQ.
+Stateless Non-Blocking Event-Driven воркер с Watchdog TTL, Write-Ahead State коммитом,
+Stateful Tombstone паттерном, Broker-Side Delay Queue (TTL+DLX) и маршрутизацией в DLQ.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any, Dict, Optional
 
@@ -32,8 +31,10 @@ async def handle_generate_request(
     1. Watchdog TTL (900s): исключает Spinning Poison Pill при аппаратной гибели воркера (OOM).
     2. Write-Ahead State Commit: персистентная запись статуса в Redis выполняется СТРОГО ДО
        отправки message.ack() в RabbitMQ, что исключает состояние гонки при падении процесса.
-    3. Zero Message Loss / In-Flight Protection: статус 'processing' троттлится (sleep 5s)
-       и возвращается в очередь (nack requeue=True), предотвращая DoS брокера.
+    3. Zero Message Loss / Non-Blocking Delay Queue: статус 'processing' перенаправляет сообщение
+       в транзитную очередь 'ai.content.generate.delay_5s' (с x-message-ttl 5000ms и DLX обратно в
+       'ai.content.generate.requested') и немедленно вызывает message.ack(), предотвращая Prefetch Starvation
+       и Livelock консьюмеров.
     4. Safe DropDuplicate: терминальные статусы ('completed', 'failed', 'dlq_routed') списываются (ack()).
     5. Fault Domain Isolation & DLQ Routing: сбой брокера сначала физически маршрутизирует сообщение
        в DLQ (nack requeue=False), и ТОЛЬКО после успеха фиксирует 'dlq_routed' в Redis, предотвращая Data Loss.
@@ -52,13 +53,18 @@ async def handle_generate_request(
         status = raw_status.decode("utf-8") if isinstance(raw_status, bytes) else str(raw_status)
 
         if status == "processing":
-            # Оригинальный воркер еще выполняет задачу. Возвращаем в очередь с троттлингом (защита от DoS брокера)
             logger.warning(
-                f"⏳ [ConcurrentInFlight] Конкурентная доставка задачи task_id={task_id} (retry={retry_count}). "
-                f"Воркер в процессе генерации. Троттлинг 5с перед Requeue (nack requeue=True)."
+                f"⏳ [ConcurrentInFlight] Задача task_id={task_id} (retry={retry_count}) выполняется. "
+                f"Делегирование задержки в брокер (Delay Queue 'ai.content.generate.delay_5s')."
             )
-            await asyncio.sleep(5)
-            await message.nack(requeue=True)
+            # 1. Публикация клона в транзитную очередь ожидания (5s TTL + DLX в основную очередь)
+            await message_broker.publish(
+                queue="ai.content.generate.delay_5s",
+                payload=data,
+                delivery_mode=2
+            )
+            # 2. Мгновенное освобождение prefetch-слота воркера (Zero Starvation)
+            await message.ack()
             return
 
         # Терминальные статусы ('completed', 'failed', 'dlq_routed') -> Безопасный DropDuplicate
