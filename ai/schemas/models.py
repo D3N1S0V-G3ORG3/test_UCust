@@ -425,28 +425,17 @@ class ChannelRegistrationDTO(BaseModel):
 class ActiveChannelsDTO(BaseModel):
     """
     Строгий DTO слоя чтения (Read Path - O(1) CPU Fast Path):
-    Принимает ИСКЛЮЧИТЕЛЬНО каноничный List[str].
-    Вся поддержка Dict[str, bool] удалена (Dead Code Elimination).
-    Любое отклонение от List[str] является нарушением Single Source of Truth и вызывает исключение.
+    Делегирует проверки типов элементов (List[str]) и длины (max_length=10) ядру Pydantic-core (Rust).
+    Исключает маскировку NULL/поврежденных состояний БД (Абсолютный Fail-Fast).
     """
-    channels: List[str] = Field(
-        default_factory=list,
-        max_length=MAX_CONNECTED_CHANNELS,
-        description=f"Строгий список каналов (макс. {MAX_CONNECTED_CHANNELS})"
-    )
+    channels: List[str] = Field(..., max_length=MAX_CONNECTED_CHANNELS, description=f"Строгий список каналов (макс. {MAX_CONNECTED_CHANNELS})")
 
     @field_validator("channels", mode="before")
     @classmethod
-    def require_strict_list(cls, raw_data: Any) -> List[str]:
-        if raw_data is None:
-            return []
-        if isinstance(raw_data, list) and all(isinstance(x, str) for x in raw_data):
-            if len(raw_data) > MAX_CONNECTED_CHANNELS:
-                raise ValueError(
-                    f"Corrupted DB state: channels count {len(raw_data)} exceeds max limit ({MAX_CONNECTED_CHANNELS})"
-                )
-            return raw_data
-        raise ValueError(
-            f"Corrupted DB state: Single Source of Truth violated. Expected List[str], got {type(raw_data)}"
-        )
+    def require_strict_list(cls, raw_data: Any) -> Any:
+        # Исключительно O(1) проверка типа контейнера. Никаких Python-циклов.
+        if not isinstance(raw_data, list):
+            raise ValueError(f"Corrupted DB state: Single Source of Truth violated. Expected list, got {type(raw_data)}")
+        # Pydantic-core выполнит валидацию элементов (str) и max_length самостоятельно в Rust
+        return raw_data
 

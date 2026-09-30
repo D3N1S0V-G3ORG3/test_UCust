@@ -31,22 +31,28 @@ except ImportError:
 
 # PostgreSQL DDL / DML скрипт для прямой миграции в СУБД (Alembic / psql)
 POSTGRES_MIGRATION_SQL = """
--- 1. Добавление колонки connected_channels в таблицу user_profiles, если отсутствует
+-- 1. Добавление колонки connected_channels, если отсутствует, и заполнение NULL значений
 ALTER TABLE user_profiles 
-ADD COLUMN IF NOT EXISTS connected_channels JSONB DEFAULT '["telegram"]'::jsonb;
+ADD COLUMN IF NOT EXISTS connected_channels JSONB DEFAULT '[]'::jsonb;
 
--- 2. Индексация для O(1) поиска пользователей по активным соцсетям (GIN Index)
+UPDATE user_profiles 
+SET connected_channels = '[]'::jsonb 
+WHERE connected_channels IS NULL;
+
+-- 2. Жесткая фиксация контракта на уровне СУБД (истинный Single Source of Truth: NOT NULL + CHECK)
+ALTER TABLE user_profiles
+ALTER COLUMN connected_channels SET DEFAULT '[]'::jsonb,
+ALTER COLUMN connected_channels SET NOT NULL,
+DROP CONSTRAINT IF EXISTS chk_channels_format,
+ADD CONSTRAINT chk_channels_format 
+    CHECK (
+        jsonb_typeof(connected_channels) = 'array' 
+        AND jsonb_array_length(connected_channels) <= 10
+    );
+
+-- 3. Индексация для O(1) поиска пользователей по активным соцсетям (GIN Index)
 CREATE INDEX IF NOT EXISTS idx_user_profiles_connected_channels_gin 
 ON user_profiles USING gin (connected_channels);
-
--- 3. Пример трансформации legacy social_links -> connected_channels
--- UPDATE user_profiles
--- SET connected_channels = (
---     SELECT jsonb_agg(DISTINCT lower(key))
---     FROM jsonb_each_text(COALESCE(social_links, '{}'::jsonb))
---     WHERE value IS NOT NULL AND value != '' AND value != 'false'
--- )
--- WHERE connected_channels IS NULL OR connected_channels = '[]'::jsonb;
 """
 
 

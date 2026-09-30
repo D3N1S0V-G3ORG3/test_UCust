@@ -64,7 +64,7 @@ class UserProfile(Base):
     # Ссылки на соцсети, собранные Интервьюером (Telegram, VK и т.д.)
     social_links: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True, default=dict)
     # Канонический JSONB массив активных подключенных каналов (['telegram', 'vk', 'max_messenger'])
-    connected_channels: Mapped[Optional[list]] = mapped_column(JSON, nullable=True, default=list)
+    connected_channels: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
