@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Any, List, Optional
 
 try:
-    from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, JSON, Float
+    from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, JSON, Float, UniqueConstraint
     from sqlalchemy.dialects.postgresql import JSONB
     from sqlalchemy.orm import Mapped, mapped_column, relationship
 except (ImportError, Exception):
@@ -20,7 +20,7 @@ except (ImportError, Exception):
         def with_variant(self, *args, **kwargs):
             return self
 
-    DateTime = ForeignKey = Integer = String = Text = JSON = JSONB = Float = _MockType
+    DateTime = ForeignKey = Integer = String = Text = JSON = JSONB = Float = UniqueConstraint = _MockType
     Mapped = Any
     def mapped_column(*args, **kwargs):
         return None
@@ -185,6 +185,9 @@ class FactMetadata(Base):
     ORM model for client FactSheets and PIM catalog facts.
     """
     __tablename__ = "fact_metadata"
+    __table_args__ = (
+        UniqueConstraint("project_id", "sku_id", "fact_type", name="uq_fact_business_key"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     project_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
@@ -203,8 +206,8 @@ class FactMetadata(Base):
 
 class FactEmbedding(Base):
     """
-    ORM model for 1536-dim halfvec (FP16) embeddings.
-    Hard Delete via ON DELETE CASCADE ensures HNSW graph integrity without soft-delete dead nodes.
+    ORM model for 1536-dim halfvec (FP16) embeddings with denormalized project_id.
+    Denormalized project_id enables native HNSW Pre-Filtering during graph traversal.
     """
     __tablename__ = "fact_embeddings"
 
@@ -213,6 +216,7 @@ class FactEmbedding(Base):
         ForeignKey("fact_metadata.id", ondelete="CASCADE"),
         primary_key=True
     )
+    project_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     # 1536-dim halfvec for 50% RAM reduction
     embedding: Mapped[Any] = mapped_column(Text, nullable=False)
 
