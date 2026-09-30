@@ -18,6 +18,7 @@ try:
         QuestionnaireStep5,
         UserQuestionnaire,
         ActiveChannelsDTO,
+        ChannelRegistrationDTO,
     )
     from storage.db import Database
     from storage.models import ContentTask, UserProfile
@@ -30,6 +31,7 @@ except ImportError:
         QuestionnaireStep5,
         UserQuestionnaire,
         ActiveChannelsDTO,
+        ChannelRegistrationDTO,
     )
     from ai.storage.db import Database
     from ai.storage.models import ContentTask, UserProfile
@@ -135,20 +137,21 @@ def get_active_connected_channels(
     profile_data: Optional[Dict[str, Any]] = None
 ) -> List[str]:
     """
-    Извлекает список только реально подключенных и активных каналов (is_active=True).
-    Использует Anti-Corruption Layer (ActiveChannelsDTO) для строгой валидации и нормализации.
+    Read Path (O(1)):
+    Извлекает список активных каналов из БД / профиля.
+    Использует строгий ActiveChannelsDTO (принимает только чистый List[str] или Dict[str, bool]).
     Гарантирует детерминированный контракт List[str] с фоллбэком на ['telegram'].
     """
     raw_sources: List[Any] = []
 
-    # 1. Сбор сырых данных из переданного словаря профиля
+    # 1. Проверка переданного словаря профиля
     if profile_data and isinstance(profile_data, dict):
-        for key in ("target_channels", "connected_channels", "social_networks", "platforms", "social_links"):
+        for key in ("connected_channels", "target_channels", "platforms", "social_networks", "social_links"):
             val = profile_data.get(key)
             if val is not None:
                 raw_sources.append(val)
 
-    # 2. Сбор сырых данных из базы данных, если в profile_data ничего не найдено
+    # 2. Извлечение из базы данных, если в profile_data пусто
     if not raw_sources and database and user_id:
         session = database.get_session()
         try:
@@ -159,18 +162,17 @@ def get_active_connected_channels(
                 profile = query.filter(UserProfile.external_user_id == str(user_id)).first()
 
             if profile:
-                if profile.social_links:
+                # 1. Приоритет канонической колонке JSONB connected_channels
+                if hasattr(profile, "connected_channels") and profile.connected_channels:
+                    raw_sources.append(profile.connected_channels)
+                elif profile.social_links:
                     raw_sources.append(profile.social_links)
-                if hasattr(profile, "connected_channels") and getattr(profile, "connected_channels"):
-                    raw_sources.append(getattr(profile, "connected_channels"))
-                if hasattr(profile, "platforms") and getattr(profile, "platforms"):
-                    raw_sources.append(getattr(profile, "platforms"))
         except Exception:
             pass
         finally:
             session.close()
 
-    # 3. Anti-Corruption Layer: строгая валидация и нормализация через ActiveChannelsDTO
+    # 3. Строгая O(1) валидация через ActiveChannelsDTO (Read Path)
     collected_channels: List[str] = []
     for raw_data in raw_sources:
         try:
@@ -179,7 +181,52 @@ def get_active_connected_channels(
                 if ch not in collected_channels:
                     collected_channels.append(ch)
         except Exception:
-            # Изолируем поврежденный источник и продолжаем валидацию остальных
             continue
 
     return collected_channels if collected_channels else ["telegram"]
+
+
+def save_user_connected_channels(
+    database: Database,
+    user_id: str,
+    raw_channels: Any
+) -> List[str]:
+    """
+    Write Path (Shift-Left Validation):
+    Принимает пользовательские входные данные (алиасы, URL, флаги),
+    нормализует через ChannelRegistrationDTO и записывает в БД
+    чистый канонический массив JSONB List[str].
+    """
+    # 1. Shift-Left нормализация на границе записи
+    write_dto = ChannelRegistrationDTO(channels=raw_channels)
+    canonical_channels = write_dto.channels if write_dto.channels else ["telegram"]
+
+    # 2. Запись в БД
+    session = database.get_session()
+    try:
+        query = session.query(UserProfile)
+        if str(user_id).isdigit():
+            profile = query.filter(or_(UserProfile.external_user_id == str(user_id), UserProfile.id == int(user_id))).first()
+        else:
+            profile = query.filter(UserProfile.external_user_id == str(user_id)).first()
+
+        if profile:
+            profile.connected_channels = canonical_channels
+            profile.social_links = {ch: True for ch in canonical_channels}
+            session.commit()
+            return canonical_channels
+        else:
+            # Создаем профиль с каноническими каналами, если не найден
+            new_profile = UserProfile(
+                external_user_id=str(user_id),
+                connected_channels=canonical_channels,
+                social_links={ch: True for ch in canonical_channels}
+            )
+            session.add(new_profile)
+            session.commit()
+            return canonical_channels
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()

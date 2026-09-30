@@ -323,7 +323,7 @@ class PendingPostSchema(BaseModel):
     duplicates_found: bool = Field(default=False, description="Duplicate detection flag")
 
 
-# Каноническая карта алиасов каналов для Anti-Corruption Layer
+# Каноническая карта алиасов каналов для Shift-Left валидации (Write Path)
 CHANNEL_CANONICAL_MAP: Dict[str, str] = {
     "telegram": "telegram",
     "tg": "telegram",
@@ -347,24 +347,24 @@ CHANNEL_CANONICAL_MAP: Dict[str, str] = {
 }
 
 
-class ActiveChannelsDTO(BaseModel):
+class ChannelRegistrationDTO(BaseModel):
     """
-    Anti-Corruption Layer (ACL) DTO для строгой валидации и нормализации подключенных каналов.
-    Преобразует любые гетерогенные входные структуры (словари флагов, списки объектов/строк, URL-мапы)
-    в строго детерминированный массив канонических строк List[str].
+    Shift-Left Валидация (Write Path):
+    Применяется при сохранении профиля, регистрации каналов и обработке HTTP-запросов (POST/PUT).
+    Принимает любые пользовательские форматы (алиасы, URL-мапы, флаги), нормализует их
+    и возвращает чистый канонический массив строк List[str] для записи в БД.
     """
-    channels: List[str] = Field(default_factory=list, description="Детерминированный список нормализованных каналов")
+    channels: List[str] = Field(default_factory=list, description="Канонический список каналов для записи в БД")
 
     @field_validator("channels", mode="before")
     @classmethod
-    def normalize_channels(cls, raw_data: Any) -> List[str]:
+    def canonicalize_write_payload(cls, raw_data: Any) -> List[str]:
         if raw_data is None:
             return []
 
         extracted: List[str] = []
 
         if isinstance(raw_data, dict):
-            # Фильтрация словаря: оставляем только истинные / активные каналы
             for ch_name, ch_val in raw_data.items():
                 if isinstance(ch_val, bool):
                     if ch_val:
@@ -397,7 +397,7 @@ class ActiveChannelsDTO(BaseModel):
         else:
             raise ValueError(f"Unsupported channels raw data type: {type(raw_data)} (expected list, dict, or str)")
 
-        # Нормализация и дедупликация с сохранением порядка
+        # Канонизация и дедупликация
         canonical_list: List[str] = []
         for ch in extracted:
             clean = ch.lower().strip()
@@ -406,4 +406,33 @@ class ActiveChannelsDTO(BaseModel):
                 canonical_list.append(norm)
 
         return canonical_list
+
+
+class ActiveChannelsDTO(BaseModel):
+    """
+    Строгий DTO слоя чтения (Read Path - O(1)):
+    Чтение принимает только каноничный список или строгий словарь булевых флагов.
+    Никаких тяжелых парсингов запятых или резолва 'TG' -> 'telegram' на этапе чтения.
+    Если данные в БД повреждены — выбрасывает ошибку консистентности.
+    """
+    channels: List[str] = Field(default_factory=list, description="Строгий список каналов")
+
+    @field_validator("channels", mode="before")
+    @classmethod
+    def require_strict_format(cls, raw_data: Any) -> List[str]:
+        if raw_data is None:
+            return []
+        # 1. Строгий массив строк (JSONB array)
+        if isinstance(raw_data, list):
+            if all(isinstance(x, str) for x in raw_data):
+                return raw_data
+            raise ValueError(f"Corrupted DB state: List elements must all be str, got {[type(x) for x in raw_data]}")
+        # 2. Строгий словарь булевых флагов
+        if isinstance(raw_data, dict):
+            if all(isinstance(v, bool) for v in raw_data.values()):
+                return [ch for ch, is_active in raw_data.items() if is_active is True]
+            raise ValueError(f"Corrupted DB state: Dict values must all be bool, got {[type(v) for v in raw_data.values()]}")
+
+        # Если данные в другом формате — это критическая ошибка консистентности БД
+        raise ValueError(f"Corrupted DB state. Expected List[str] or Dict[str, bool], got {type(raw_data)}")
 
