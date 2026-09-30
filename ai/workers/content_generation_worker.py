@@ -6,6 +6,7 @@ Write-Ahead State коммитом, паттерном Stateful Tombstone и м�
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Dict, Optional
 
@@ -31,10 +32,11 @@ async def handle_generate_request(
     1. Watchdog TTL (900s): исключает Spinning Poison Pill при аппаратной гибели воркера (OOM).
     2. Write-Ahead State Commit: персистентная запись статуса в Redis выполняется СТРОГО ДО
        отправки message.ack() в RabbitMQ, что исключает состояние гонки при падении процесса.
-    3. Zero Message Loss / In-Flight Protection: статус 'processing' возвращает сообщение
-       в очередь (nack requeue=True).
+    3. Zero Message Loss / In-Flight Protection: статус 'processing' троттлится (sleep 5s)
+       и возвращается в очередь (nack requeue=True), предотвращая DoS брокера.
     4. Safe DropDuplicate: терминальные статусы ('completed', 'failed', 'dlq_routed') списываются (ack()).
-    5. Fault Domain Isolation & DLQ Routing: сбой брокера переводит задачу в 'dlq_routed' и nack(requeue=False).
+    5. Fault Domain Isolation & DLQ Routing: сбой брокера сначала физически маршрутизирует сообщение
+       в DLQ (nack requeue=False), и ТОЛЬКО после успеха фиксирует 'dlq_routed' в Redis, предотвращая Data Loss.
     """
     data: Dict[str, Any] = message.payload
     task_id: Optional[int] = data.get("task_id")
@@ -50,11 +52,12 @@ async def handle_generate_request(
         status = raw_status.decode("utf-8") if isinstance(raw_status, bytes) else str(raw_status)
 
         if status == "processing":
-            # Оригинальный воркер еще выполняет задачу. Возвращаем в очередь для предотвращения потери.
+            # Оригинальный воркер еще выполняет задачу. Возвращаем в очередь с троттлингом (защита от DoS брокера)
             logger.warning(
                 f"⏳ [ConcurrentInFlight] Конкурентная доставка задачи task_id={task_id} (retry={retry_count}). "
-                f"Воркер в процессе генерации. Выполняется Requeue (nack requeue=True)."
+                f"Воркер в процессе генерации. Троттлинг 5с перед Requeue (nack requeue=True)."
             )
+            await asyncio.sleep(5)
             await message.nack(requeue=True)
             return
 
@@ -89,14 +92,14 @@ async def handle_generate_request(
             await redis_client.set(lock_key, "failed", ex=TERMINAL_STATE_TTL_SECONDS)
             await message.ack()
         except Exception as broker_exc:
-            # Poison Message Guard: сбой транспорта при отправке ошибки -> немедленный сброс в DLQ
+            # Poison Message Guard: сбой транспорта при отправке ошибки -> сначала физический сброс в DLQ, затем tombstone
             logger.critical(
                 f"💥 [PoisonMessageGuard] Брокер недоступен при отправке ошибки task_id={task_id}: {broker_exc}. "
                 f"Маршрутизация сообщения в DLQ.",
                 exc_info=True
             )
-            await redis_client.set(lock_key, "dlq_routed", ex=TERMINAL_STATE_TTL_SECONDS)
             await message.nack(requeue=False)
+            await redis_client.set(lock_key, "dlq_routed", ex=TERMINAL_STATE_TTL_SECONDS)
         return
 
     # 3. Изолированный домен транспорта при успешной генерации
@@ -111,11 +114,11 @@ async def handle_generate_request(
         await message.ack()
         logger.info(f"✅ [AIWorker] Генерация task_id={task_id} успешно завершена, статус 'completed' зафиксирован.")
     except Exception as broker_exc:
-        # Сбой публикации готового результата -> отправка в DLQ для ручного инспектирования
+        # Сбой публикации готового результата -> сначала физический сброс в DLQ, затем tombstone
         logger.critical(
             f"💥 [PoisonMessageGuard] Сбой публикации успеха task_id={task_id} в брокер: {broker_exc}. "
             f"Маршрутизация сообщения в DLQ.",
             exc_info=True
         )
-        await redis_client.set(lock_key, "dlq_routed", ex=TERMINAL_STATE_TTL_SECONDS)
         await message.nack(requeue=False)
+        await redis_client.set(lock_key, "dlq_routed", ex=TERMINAL_STATE_TTL_SECONDS)
