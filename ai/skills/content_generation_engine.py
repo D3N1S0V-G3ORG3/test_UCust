@@ -84,11 +84,12 @@ class ContentGenerationEngine:
     def __init__(
         self,
         dev_mode: bool = True,
-        concurrency_limit: int = 2,
+        concurrency_limit: int = 1,
         config: Optional[Dict[str, Any]] = None
     ):
         self.dev_mode = dev_mode
         cfg = config or {}
+        # Строгая сериализация CPU-инференса для предотвращения Thread Thrashing и разрушения кэша L3
         self.concurrency_limit = cfg.get("LLM_CONCURRENCY_LIMIT", concurrency_limit)
         self._llm_semaphore: Optional[asyncio.Semaphore] = None
         self.audit_agent = AuditDeduplicationAgent(custom_threshold=0.82)
@@ -284,60 +285,83 @@ class ContentGenerationEngine:
                 "Правило: не выдумывай несуществующие цифры и технологии, отсутствующие в списке выше."
             )
 
-        # 4. LLM Инференс (выполняется в отдельном потоке во избежание блокировки Event Loop)
+        # 4. LLM Инференс с In-Flight Reflection Loop (Self-Correction) и изолированным факт-чекингом
+        max_attempts = 2
+        current_user_msg = user_msg
         post_text = ""
-        if self.llm:
-            try:
-                if hasattr(self.llm, "generate_chat"):
+
+        for attempt in range(max_attempts):
+            generated_chunk = ""
+            if self.llm:
+                try:
                     messages = [
                         {"role": "system", "content": system_msg},
-                        {"role": "user", "content": user_msg}
+                        {"role": "user", "content": current_user_msg}
                     ]
-                    post_text = await asyncio.to_thread(self.llm.generate_chat, messages=messages, max_tokens=800)
-                elif hasattr(self.llm, "generate_post"):
-                    post_text = await asyncio.to_thread(self.llm.generate_post, topic=actual_topic, niche=niche, company_name=company_name)
-            except Exception as llm_err:
-                logger.error(f"⚠️ Ошибка LLM инференса: {llm_err}")
+                    if hasattr(self.llm, "generate_chat_async"):
+                        generated_chunk = await self.llm.generate_chat_async(messages=messages, max_tokens=800)
+                    elif hasattr(self.llm, "generate_chat"):
+                        generated_chunk = await asyncio.to_thread(self.llm.generate_chat, messages=messages, max_tokens=800)
+                    elif hasattr(self.llm, "generate_post"):
+                        generated_chunk = await asyncio.to_thread(self.llm.generate_post, topic=actual_topic, niche=niche, company_name=company_name)
+                except Exception as llm_err:
+                    logger.error(f"⚠️ Ошибка LLM инференса (попытка {attempt + 1}/{max_attempts}) для '{target_channel_norm}': {llm_err}")
 
-        # Детерминированный фоллбэк при недоступности локальных весов
-        if not post_text:
-            if "vk" in target_channel_norm or "вк" in target_channel_norm:
-                post_text = (
-                    f"НОВИНКА ОТ {company_name.upper()}\n\n"
-                    f"{actual_topic} — проверенное качество и натуральные ингредиенты.\n\n"
-                    f"▫️ {rag_context}\n\n"
-                    f"👉 Ссылка на каталог и оформление — в первом комментарии под постом.\n\n"
-                    f"#новинки@{group_domain}"
-                )
-            elif "ok" in target_channel_norm or "одноклассники" in target_channel_norm:
-                post_text = (
-                    f"Встречайте новинку от «{company_name}»! 🌻\n\n"
-                    f"{actual_topic} — теперь доступно для заказа.\n\n"
-                    f"📌 {rag_context}\n\n"
-                    f"Ставьте «Класс» 👍, чтобы не потерять пост, и делитесь им с друзьями!"
-                )
-            elif "max" in target_channel_norm or "messenger" in target_channel_norm:
-                post_text = (
-                    f"📦 **{actual_topic} уже в наличии**\n\n"
-                    f"Оформите заказ в «{company_name}» прямо сейчас.\n\n"
-                    f"👉 [Оформить заказ в один клик](https://example.com/order)"
+            if not generated_chunk:
+                # Детерминированный фоллбэк при недоступности локальных весов
+                if "vk" in target_channel_norm or "вк" in target_channel_norm:
+                    post_text = (
+                        f"НОВИНКА ОТ {company_name.upper()}\n\n"
+                        f"{actual_topic} — проверенное качество и натуральные ингредиенты.\n\n"
+                        f"▫️ {rag_context}\n\n"
+                        f"👉 Ссылка на каталог и оформление — в первом комментарии под постом.\n\n"
+                        f"#новинки@{group_domain}"
+                    )
+                elif "ok" in target_channel_norm or "одноклассники" in target_channel_norm:
+                    post_text = (
+                        f"Встречайте новинку от «{company_name}»! 🌻\n\n"
+                        f"{actual_topic} — теперь доступно для заказа.\n\n"
+                        f"📌 {rag_context}\n\n"
+                        f"Ставьте «Класс» 👍, чтобы не потерять пост, и делитесь им с друзьями!"
+                    )
+                elif "max" in target_channel_norm or "messenger" in target_channel_norm:
+                    post_text = (
+                        f"📦 **{actual_topic} уже в наличии**\n\n"
+                        f"Оформите заказ в «{company_name}» прямо сейчас.\n\n"
+                        f"👉 [Оформить заказ в один клик](https://example.com/order)"
+                    )
+                else:
+                    post_text = (
+                        f"☕ <b>{actual_topic}</b> — ключевые стандарты и детали от {company_name}.\n\n"
+                        f"<blockquote expandable>\n"
+                        f"{rag_context}\n"
+                        f"</blockquote>\n\n"
+                        f"Каждый день мы совершенствуем процессы, чтобы вы получали безупречный результат.\n\n"
+                        f"👉 Подробнее по ссылке в описании профиля или напишите нам в личные сообщения."
+                    )
+                break
+
+            # 4.1. Арбитражная проверка фактов ВНУТРИ канала
+            critic_report = FactCheckingCritic.validate_and_autocorrect(
+                text=generated_chunk,
+                fact_sheet=fact_sheet
+            )
+
+            if critic_report.is_fully_grounded:
+                post_text = critic_report.sanitized_text
+                logger.info(f"✅ [In-Flight Grounding] Канал '{target_channel_norm}' успешно прошел верификацию на попытке {attempt + 1}")
+                break
+            elif attempt < max_attempts - 1:
+                # Reflection: Подача замечаний обратно в LLM для самокоррекции с сохранением структуры
+                corrections = "; ".join([f"'{p.hallucinated_phrase}' ({p.reason})" for p in critic_report.patches])
+                logger.info(f"🔄 [Reflection Loop] Самокоррекция канала '{target_channel_norm}' (попытка {attempt + 1}): {corrections}")
+                current_user_msg += (
+                    f"\n\n[SYSTEM CRITIQUE]: В предыдущем варианте обнаружены неподтвержденные утверждения: {corrections}. "
+                    f"Перепиши текст, строго опираясь на подтвержденные факты, без этих утверждений, соблюдая ритмику, ToV и форматирование платформы."
                 )
             else:
-                post_text = (
-                    f"☕ <b>{actual_topic}</b> — ключевые стандарты и детали от {company_name}.\n\n"
-                    f"<blockquote expandable>\n"
-                    f"{rag_context}\n"
-                    f"</blockquote>\n\n"
-                    f"Каждый день мы совершенствуем процессы, чтобы вы получали безупречный результат.\n\n"
-                    f"👉 Подробнее по ссылке в описании профиля или напишите нам в личные сообщения."
-                )
-
-        # 4.1. Арбитражная проверка фактов и автокоррекция (FactCheckingCritic)
-        critic_report = FactCheckingCritic.validate_and_autocorrect(
-            text=post_text,
-            fact_sheet=fact_sheet
-        )
-        post_text = critic_report.sanitized_text
+                # На финальной попытке применяем безопасную санитарную автокоррекцию
+                post_text = critic_report.sanitized_text
 
         # 4.2. Платформо-специфичный детерминированный пост-процессинг
         channel_payload: Optional[Dict[str, Any]] = None

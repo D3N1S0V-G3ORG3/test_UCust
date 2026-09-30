@@ -7,8 +7,10 @@ File: ai/core/llm_provider.py
 from __future__ import annotations
 
 import os
+import asyncio
 import threading
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger("LLMProvider")
@@ -18,11 +20,15 @@ class SaigaLLMSkill:
     """
     Потокобезопасный Singleton для инференса локальной LLM Сайга (Llama-3 / NeMo).
     Веса загружаются в память строго один раз.
+    Использует строгую сериализацию инференса (asyncio.Lock + single ThreadPoolExecutor),
+    предотвращая OpenMP Thread Thrashing и L3 Cache Eviction при исполнении на CPU.
     """
     _instance: Optional[SaigaLLMSkill] = None
     _lock = threading.Lock()
     _llm: Any = None
     _is_mock: bool = False
+    _single_thread_pool: Optional[ThreadPoolExecutor] = None
+    _async_lock: Optional[asyncio.Lock] = None
 
     def __new__(
         cls, 
@@ -37,6 +43,8 @@ class SaigaLLMSkill:
 
     def _initialize_model(self, model_path: str, dev_mode: bool):
         logger.info(f"🧠 Инициализация LLM провайдера. Путь: {model_path}, dev_mode: {dev_mode}")
+        self._single_thread_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="saiga_cpu_worker")
+        self._async_lock = None
         
         # Поиск возможных путей к модели
         candidates = [
@@ -73,6 +81,27 @@ class SaigaLLMSkill:
 
         self._llm = None
         self._is_mock = True
+
+    async def generate_chat_async(self, messages: List[Dict[str, str]], max_tokens: int = 600) -> str:
+        """
+        Асинхронная сериализованная генерация ответа.
+        Гарантирует 1 конкурентный инференс на CPU, позволяя C++/BLAS ядру
+        задействовать 100% потоков без переключения контекста и деградации L3 кэша.
+        """
+        if self._async_lock is None:
+            self._async_lock = asyncio.Lock()
+
+        if self._single_thread_pool is None:
+            self._single_thread_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="saiga_cpu_worker")
+
+        async with self._async_lock:
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(
+                self._single_thread_pool,
+                self.generate_chat,
+                messages,
+                max_tokens
+            )
 
     def generate_chat(self, messages: List[Dict[str, str]], max_tokens: int = 600) -> str:
         """
