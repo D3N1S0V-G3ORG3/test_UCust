@@ -180,10 +180,51 @@ class OrchestratorTrace(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class FactMetadata(Base):
+    """
+    ORM model for client FactSheets and PIM catalog facts.
+    """
+    __tablename__ = "fact_metadata"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    sku_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, index=True)
+    fact_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    valid_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    embedding_rel: Mapped[Optional["FactEmbedding"]] = relationship(
+        "FactEmbedding",
+        back_populates="fact_meta",
+        cascade="all, delete-orphan",
+        uselist=False
+    )
+
+
+class FactEmbedding(Base):
+    """
+    ORM model for 1536-dim halfvec (FP16) embeddings.
+    Hard Delete via ON DELETE CASCADE ensures HNSW graph integrity without soft-delete dead nodes.
+    """
+    __tablename__ = "fact_embeddings"
+
+    fact_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("fact_metadata.id", ondelete="CASCADE"),
+        primary_key=True
+    )
+    # 1536-dim halfvec for 50% RAM reduction
+    embedding: Mapped[Any] = mapped_column(Text, nullable=False)
+
+    fact_meta: Mapped["FactMetadata"] = relationship("FactMetadata", back_populates="embedding_rel")
+
+
 __all__ = [
     "UserProfile",
     "ProjectMetadata",
     "PublicationHistory",
     "ContentTask",
     "OrchestratorTrace",
+    "FactMetadata",
+    "FactEmbedding",
 ]
