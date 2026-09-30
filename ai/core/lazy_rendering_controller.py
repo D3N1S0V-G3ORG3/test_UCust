@@ -310,14 +310,17 @@ class LazyRenderingController:
             is_oom = any(kw in err_str for kw in ["out of memory", "cuda oom", "vram", "oom", "allocation"])
 
             if is_oom:
-                logger.warning(f"💥 [FSM] Обнаружен OOM-сбой для {post.post_id}. Запуск RETRY_CPU_FALLBACK...")
-                await self._handle_cpu_fallback(post, str(e))
+                logger.warning(
+                    f"💥 [FSM] Обнаружен CUDA OOM для {post.post_id}. "
+                    f"Нода изолирована. Повтор на здоровом GPU или перевод в DEAD_LETTER_QUEUE..."
+                )
+                await self._handle_gpu_oom_retry(post, str(e))
             else:
                 logger.error(f"❌ [FSM] Фатальная ошибка рендера для {post.post_id}: {e}", exc_info=True)
                 await self._transition_to_dlq(post, str(e))
 
     async def _execute_rendering_pipeline(self, post: PostDraft) -> List[str]:
-        """Пайплайн рендеринга всех спецификаций."""
+        """Пайплайн рендеринга всех спецификаций на удаленном GPU пуле."""
         rendered_urls = []
         for idx, spec in enumerate(post.image_specs):
             logger.debug(f"   🖼️ Рендер кадра #{idx + 1} ({spec.width}x{spec.height})...")
@@ -334,26 +337,28 @@ class LazyRenderingController:
             rendered_urls.append(s3_url)
         return rendered_urls
 
-    async def _handle_cpu_fallback(self, post: PostDraft, oom_reason: str):
-        """Обработчик OOM-сбоя: переводит в RETRY_CPU_FALLBACK и пробует CPU-рендер."""
-        post.status = PostLifecycleStatus.RETRY_CPU_FALLBACK
-        post.error_message = f"GPU OOM: {oom_reason}. Выполняется CPU Fallback."
+    async def _handle_gpu_oom_retry(self, post: PostDraft, oom_reason: str):
+        """
+        Обработчик CUDA OOM: исключает CPU-инференс для защиты процессора хоста от троттлинга.
+        Пробует повторить генерацию на другой доступной GPU-ноде пула.
+        """
+        post.error_message = f"GPU OOM: {oom_reason}. Попытка ретрая на альтернативной GPU-ноде."
         post.updated_at = datetime.now()
 
         try:
-            # CPU Fallback рендер
-            cpu_rendered_urls = []
-            for idx, spec in enumerate(post.image_specs):
-                raw_bytes = await self._execute_comfy_generation(spec)
-                s3_url = await self.uploader(raw_bytes, f"posts/{post.post_id}/cpu_fallback_{idx + 1}.jpg")
-                cpu_rendered_urls.append(s3_url)
+            if self.comfy_bridge:
+                logger.info(f"🔄 [FSM] Повторная попытка рендера {post.post_id} на резервной GPU-ноде...")
+                rendered_urls = await self._execute_rendering_pipeline(post)
+                post.rendered_image_urls = rendered_urls
+                post.status = PostLifecycleStatus.RENDERED
+                post.requires_user_action = False
+                logger.info(f"✅ [FSM] Рендер на резервной GPU успешно завершен для {post.post_id}.")
+                return
+        except Exception as retry_err:
+            logger.error(f"❌ [FSM] Повторный GPU-рендер завершился ошибкой: {retry_err}")
 
-            post.rendered_image_urls = cpu_rendered_urls
-            post.status = PostLifecycleStatus.RENDERED
-            post.requires_user_action = False
-            logger.info(f"✅ [FSM] CPU Fallback успешно завершен для {post.post_id}.")
-        except Exception as cpu_err:
-            await self._transition_to_dlq(post, f"CPU Fallback failed: {cpu_err}")
+        # Если повтор на GPU не удался — сброс в DLQ без опасного CPU-инференса
+        await self._transition_to_dlq(post, f"GPU Cluster OOM (все GPU перегружены): {oom_reason}")
 
     async def _transition_to_dlq(self, post: PostDraft, reason: str):
         """

@@ -1,141 +1,345 @@
 """
 File: ai/bridge/comfy_bridge.py
-Асинхронный клиент для взаимодействия с ComfyUI (REST + WebSockets).
+Отказоустойчивый сетевой оркестратор для удаленного пула ComfyUI GPU-воркеров.
+Реализует:
+1. Балансировку по наименьшей нагрузке (Least Load VRAM Routing).
+2. Автономный рендеринг: fallback на HTTP polling /history/{prompt_id} при обрыве WebSocket.
+3. Распознавание и изоляцию CUDA OOM (mark_node_degraded) без губительного CPU Fallback.
+4. Watchdog Circuit Breaker (120s для изображений, 300s для видео, ping_interval=10).
 """
 
 from __future__ import annotations
 
-import os
-import uuid
+import asyncio
 import json
 import logging
-import asyncio
+import os
+import time
+import uuid
+from typing import Any, Dict, List, Optional
+
 import httpx
 import websockets
-from typing import Optional, Dict, Any
-
-try:
-    from core.lazy_rendering_controller import ImageGenerationSpec
-    from bridge.comfy_workflow_templates import WorkflowBuilder
-except ImportError:
-    from ai.core.lazy_rendering_controller import ImageGenerationSpec
-    from ai.bridge.comfy_workflow_templates import WorkflowBuilder
 
 logger = logging.getLogger("ComfyUIBridge")
 
 
+class CudaOOMError(Exception):
+    """Исключение при нехватке видеопамяти (CUDA Out of Memory) на удаленном GPU узле."""
+    pass
+
+
+class RenderTimeoutError(Exception):
+    """Превышение максимального времени генерации (Circuit Breaker)."""
+    pass
+
+
+class ComfyUIExecutionError(Exception):
+    """Внутренняя ошибка исполнения нод графа ComfyUI."""
+    pass
+
+
+class GPUNode:
+    """Модель состояния отдельного удаленного GPU-инстанса в кластере."""
+
+    def __init__(self, url: str, total_vram_gb: float = 24.0):
+        self.url = url.rstrip("/")
+        self.total_vram_gb = total_vram_gb
+        self.allocated_vram_gb: float = 0.0
+        self.is_healthy: bool = True
+        self.degraded_until: float = 0.0
+        self.active_tasks_count: int = 0
+
+    @property
+    def is_available(self) -> bool:
+        if not self.is_healthy:
+            return False
+        if time.time() < self.degraded_until:
+            return False
+        return True
+
+    @property
+    def available_vram_gb(self) -> float:
+        return max(0.0, self.total_vram_gb - self.allocated_vram_gb)
+
+
+class GPULoadBalancer:
+    """
+    Балансировщик нагрузки пула удаленных GPU-воркеров.
+    Маршрутизирует задачи по стратегии Least Load (наибольший запас доступной VRAM)
+    и временно выводит сбойные ноды при обнаружении CUDA OOM.
+    """
+
+    def __init__(self, node_urls: Optional[List[str]] = None):
+        if not node_urls:
+            raw_hosts = os.getenv("COMFYUI_HOSTS", "")
+            if raw_hosts:
+                urls = [h.strip() for h in raw_hosts.split(",") if h.strip()]
+            else:
+                h = os.getenv("COMFYUI_HOST", "127.0.0.1")
+                p = os.getenv("COMFYUI_PORT", "8188")
+                urls = [f"http://{h}:{p}"]
+        else:
+            urls = node_urls
+
+        self.nodes: List[GPUNode] = [GPUNode(u) for u in urls]
+        self._lock = asyncio.Lock()
+        logger.info(f"🚀 [GPULoadBalancer] Инициализирован пул из {len(self.nodes)} GPU-нод: {[n.url for n in self.nodes]}")
+
+    async def acquire_node(self, vram_required_gb: float = 6.0) -> str:
+        """
+        Выбирает наименее загруженную здоровую GPU-ноду с достаточным запасом VRAM.
+        """
+        async with self._lock:
+            available_nodes = [n for n in self.nodes if n.is_available]
+            if not available_nodes:
+                # Если все ноды временно деградировали, проверяем окончание таймаута
+                now = time.time()
+                for n in self.nodes:
+                    if now >= n.degraded_until:
+                        n.is_healthy = True
+                available_nodes = [n for n in self.nodes if n.is_available]
+
+            if not available_nodes:
+                raise RuntimeError("❌ [GPULoadBalancer] Все удаленные GPU-ноды временно недоступны или перегружены.")
+
+            # Сортировка по доступной VRAM (по убыванию) и числу активных задач (по возрастанию)
+            available_nodes.sort(key=lambda n: (n.available_vram_gb, -n.active_tasks_count), reverse=True)
+            chosen_node = available_nodes[0]
+
+            chosen_node.allocated_vram_gb += vram_required_gb
+            chosen_node.active_tasks_count += 1
+            logger.info(
+                f"🎯 [GPULoadBalancer] Выделена нода {chosen_node.url} "
+                f"(Свободно VRAM: {chosen_node.available_vram_gb:.1f}GB, Активных задач: {chosen_node.active_tasks_count})"
+            )
+            return chosen_node.url
+
+    async def release_node(self, node_url: str, vram_gb: float = 6.0) -> None:
+        """Освобождение VRAM-квоты ноды после завершения рендера."""
+        async with self._lock:
+            for n in self.nodes:
+                if n.url == node_url.rstrip("/"):
+                    n.allocated_vram_gb = max(0.0, n.allocated_vram_gb - vram_gb)
+                    n.active_tasks_count = max(0, n.active_tasks_count - 1)
+                    break
+
+    async def mark_node_degraded(self, node_url: str, cooldown_seconds: int = 180) -> None:
+        """
+        Маркировка ноды как деградировавшей при CUDA OOM с кулдауном.
+        Нода изолируется от получения новых задач на период cooldown_seconds.
+        """
+        async with self._lock:
+            for n in self.nodes:
+                if n.url == node_url.rstrip("/"):
+                    n.is_healthy = False
+                    n.degraded_until = time.time() + cooldown_seconds
+                    n.allocated_vram_gb = 0.0
+                    n.active_tasks_count = 0
+                    logger.critical(
+                        f"💥 [GPULoadBalancer] Нода {n.url} поймала CUDA OOM! "
+                        f"Изоляция из пула на {cooldown_seconds}с (до {time.strftime('%H:%M:%S', time.localtime(n.degraded_until))})."
+                    )
+                    break
+
+
 class ComfyUIBridge:
     """
-    Асинхронный мост для взаимодействия с ComfyUI:
-    - Собирает Prompt API граф через WorkflowBuilder
-    - Отправляет задачу в очередь ComfyUI (POST /prompt)
-    - Слушает WebSocket поток событий (progress, executed, execution_error)
-    - Скачивает готовый бинарник изображения (GET /view?filename=...)
-    - Поддерживает dev_simulation_mode для безопасного выполнения без GPU/OOM
+    Асинхронный отказоустойчивый мост взаимодействия с ComfyUI кластером.
     """
 
-    def __init__(self, host: Optional[str] = None, port: Optional[int] = None):
-        h = host or os.getenv("COMFYUI_HOST", "127.0.0.1")
-        p = port or int(os.getenv("COMFYUI_PORT", "8188"))
-        self.server_address = f"{h}:{p}"
-        self.client_id = str(uuid.uuid4())
+    def __init__(self, gpu_pool: Optional[GPULoadBalancer] = None):
+        self.pool = gpu_pool or GPULoadBalancer()
 
-    async def render_image(
+    async def render_asset(
         self,
-        spec: ImageGenerationSpec,
-        post_id: str,
+        workflow_json: Dict[str, Any],
+        is_video: bool = False,
+        post_id: Optional[str] = None,
         dev_simulation_mode: bool = False
     ) -> bytes:
         """
-        Полный цикл: Сборка графа -> Отправка -> Ожидание по WS -> Скачивание бинарника.
+        Основной метод рендеринга ассета:
+        1. Least Load VRAM маршрутизация.
+        2. Watchdog таймауты (120с / 300с).
+        3. Мониторинг WebSocket с фолбэком на HTTP polling при разрыве TCP.
+        4. Изоляция CUDA OOM и освобождение ресурсов.
         """
         if dev_simulation_mode:
-            logger.info(f"🛠️ [DEV MODE] Симуляция рендера для поста {post_id}. (0 GPU)")
-            await asyncio.sleep(0.5)
-            # Возвращаем минимальный валидный 1x1 PNG байт-стрим с метаданными поста
-            mock_bytes = (
+            logger.info(f"🛠️ [DEV MODE] Симуляция генерации ассета для {post_id} (0 GPU).")
+            await asyncio.sleep(0.1)
+            return (
                 b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4"
                 b"\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
-                b"::UCUST_SIMULATED_RENDER::" + post_id.encode("utf-8")
             )
-            return mock_bytes
 
-        # 1. Формируем API-граф
-        prompt_workflow = WorkflowBuilder.build_payload(
+        vram_cost = 12.0 if is_video else 6.0
+        timeout_sec = 300 if is_video else 120
+        node_url = await self.pool.acquire_node(vram_required_gb=vram_cost)
+        prompt_id: Optional[str] = None
+
+        try:
+            # 1. Постановка в очередь ComfyUI (REST)
+            prompt_id = await self._queue_prompt(node_url, workflow_json)
+            logger.info(f"📤 [ComfyUI] Задача {prompt_id} отправлена на {node_url} (timeout={timeout_sec}s)")
+
+            # 2. Мониторинг по WebSocket с тайм-аутом Circuit Breaker
+            try:
+                asset_bytes = await asyncio.wait_for(
+                    self._monitor_websocket(node_url, prompt_id),
+                    timeout=timeout_sec
+                )
+                return asset_bytes
+            except (websockets.ConnectionClosed, websockets.WebSocketException, httpx.TransportError, httpx.NetworkError, ConnectionError, OSError) as net_err:
+                logger.warning(
+                    f"⚠️ [ComfyUI] Обрыв WebSocket на {node_url} ({net_err}). "
+                    f"ComfyUI продолжает автономный рендеринг. Переход в режим HTTP Polling..."
+                )
+                # 3. Фолбэк на опрос истории (Zero Asset Loss)
+                return await self._poll_history(node_url, prompt_id, timeout_sec=60)
+            except asyncio.TimeoutError:
+                raise RenderTimeoutError(f"Превышен лимит времени {timeout_sec}с при рендере на {node_url}")
+
+        except CudaOOMError:
+            # Изоляция деградировавшей ноды без CPU Fallback
+            await self.pool.mark_node_degraded(node_url)
+            raise
+        finally:
+            await self.pool.release_node(node_url, vram_gb=vram_cost)
+
+    async def render_image(
+        self,
+        spec: Any,
+        post_id: str,
+        dev_simulation_mode: bool = False
+    ) -> bytes:
+        """Совместимый интерфейс для существующих контроллеров."""
+        from ai.bridge.comfy_workflow_templates import WorkflowBuilder
+        workflow = WorkflowBuilder.build_payload(
             prompt=spec.prompt,
             negative_prompt=spec.negative_prompt,
             width=spec.width,
             height=spec.height,
             seed=spec.seed,
-            filename_prefix=f"ucust_post_{post_id}"
+            filename_prefix=f"ucust_{post_id}"
+        )
+        return await self.render_asset(
+            workflow_json=workflow,
+            is_video=False,
+            post_id=post_id,
+            dev_simulation_mode=dev_simulation_mode
         )
 
-        ws_url = f"ws://{self.server_address}/ws?clientId={self.client_id}"
-        
-        try:
-            async with websockets.connect(ws_url, max_size=None) as websocket:
-                # 2. Постановка в очередь ComfyUI (REST)
-                prompt_id = await self._queue_prompt(prompt_workflow)
-                logger.info(f"📤 Задача {prompt_id} отправлена в ComfyUI (Post ID: {post_id})")
+    async def _queue_prompt(self, node_url: str, workflow: Dict[str, Any]) -> str:
+        """Отправка графа в REST API /prompt."""
+        url = f"{node_url}/prompt"
+        client_id = str(uuid.uuid4())
+        payload = {"prompt": workflow, "client_id": client_id}
 
-                output_filename = None
-                
-                # 3. Слушаем события в реальном времени
-                while True:
-                    out = await websocket.recv()
-                    if not isinstance(out, str):
-                        continue
-                        
-                    message = json.loads(out)
-                    msg_type = message.get("type")
-                    data = message.get("data", {})
-
-                    # Отслеживаем прогресс
-                    if msg_type == "progress":
-                        current = data.get("value", 0)
-                        maximum = data.get("max", 1)
-                        logger.debug(f"⏳ Рендер {prompt_id}: {current}/{maximum} шагов")
-
-                    # Фиксация успешного завершения графа
-                    if msg_type == "executed" and data.get("prompt_id") == prompt_id:
-                        images = data.get("output", {}).get("images", [])
-                        if images:
-                            output_filename = images[0].get("filename")
-                            logger.info(f"✅ Рендер завершен. Сохранен как: {output_filename}")
-                        break
-                        
-                    # Обработка внутренних ошибок ComfyUI
-                    if msg_type == "execution_error" and data.get("prompt_id") == prompt_id:
-                        error_details = data.get("exception_message", "Unknown Error")
-                        raise RuntimeError(f"ComfyUI Execution Error: {error_details}")
-
-                if not output_filename:
-                    raise RuntimeError("Событие executed получено, но имя файла отсутствует.")
-
-                # 4. Скачивание готового изображения в ОЗУ
-                return await self._fetch_image(output_filename)
-                
-        except (ConnectionRefusedError, OSError):
-            logger.error(f"❌ ComfyUI недоступен по адресу {self.server_address}")
-            raise RuntimeError(f"ComfyUI Server is offline at {self.server_address}.")
-        except Exception as e:
-            logger.error(f"❌ Ошибка в процессе рендера: {str(e)}")
-            raise
-
-    async def _queue_prompt(self, workflow: dict) -> str:
-        """Отправка графа в очередь сервера."""
-        url = f"http://{self.server_address}/prompt"
-        payload = {"prompt": workflow, "client_id": self.client_id}
-        
         async with httpx.AsyncClient() as client:
-            response = await client.post(url, json=payload, timeout=10.0)
+            response = await client.post(url, json=payload, timeout=15.0)
             response.raise_for_status()
             return response.json().get("prompt_id")
 
-    async def _fetch_image(self, filename: str) -> bytes:
-        """Скачивание бинарного файла из папки output ComfyUI."""
-        url = f"http://{self.server_address}/view?filename={filename}"
+    async def _monitor_websocket(self, node_url: str, prompt_id: str) -> bytes:
+        """Слушает WebSocket-поток событий ComfyUI с TCP Watchdog (ping_interval=10)."""
+        ws_url = node_url.replace("http://", "ws://").replace("https://", "wss://") + f"/ws?clientId={prompt_id}"
+
+        async with websockets.connect(ws_url, ping_interval=10, ping_timeout=5, max_size=None) as ws:
+            async for raw_msg in ws:
+                if not isinstance(raw_msg, str):
+                    continue
+
+                msg = json.loads(raw_msg)
+                msg_type = msg.get("type")
+                data = msg.get("data", {})
+
+                if msg_type == "execution_error" and data.get("prompt_id") == prompt_id:
+                    exc_msg = str(data.get("exception_message", "")).lower()
+                    exc_type = str(data.get("exception_type", "")).lower()
+                    if "out of memory" in exc_msg or "cuda" in exc_msg or "oom" in exc_type:
+                        raise CudaOOMError(f"CUDA OOM на {node_url}: {exc_msg}")
+                    raise ComfyUIExecutionError(f"ComfyUI Execution Error: {exc_msg}")
+
+                if msg_type == "executed" and data.get("prompt_id") == prompt_id:
+                    return await self._fetch_output_from_history(node_url, prompt_id)
+
+        # Если сокет закрылся без executed
+        return await self._fetch_output_from_history(node_url, prompt_id)
+
+    async def _poll_history(self, node_url: str, prompt_id: str, timeout_sec: int = 60) -> bytes:
+        """
+        Фолбэк опрос эндпоинта /history/{prompt_id} при сетевом сбое сокета.
+        """
+        start_time = time.time()
+        url = f"{node_url}/history/{prompt_id}"
+
         async with httpx.AsyncClient() as client:
-            response = await client.get(url, timeout=60.0)
-            response.raise_for_status()
-            return response.content
+            while time.time() - start_time < timeout_sec:
+                try:
+                    resp = await client.get(url, timeout=10.0)
+                    if resp.status_code == 200:
+                        history_data = resp.json()
+                        if prompt_id in history_data:
+                            task_info = history_data[prompt_id]
+                            # Проверяем ошибки
+                            status_info = task_info.get("status", {})
+                            if status_info.get("status_str") == "error":
+                                messages = status_info.get("messages", [])
+                                err_text = str(messages).lower()
+                                if "out of memory" in err_text or "cuda" in err_text:
+                                    raise CudaOOMError(f"CUDA OOM (из /history) на {node_url}: {err_text}")
+                                raise ComfyUIExecutionError(f"ComfyUI Execution Error: {err_text}")
+
+                            # Извлекаем outputs
+                            outputs = task_info.get("outputs", {})
+                            for node_id, node_output in outputs.items():
+                                images = node_output.get("images", [])
+                                if images:
+                                    filename = images[0].get("filename")
+                                    subfolder = images[0].get("subfolder", "")
+                                    img_type = images[0].get("type", "output")
+                                    return await self._fetch_image_bytes(node_url, filename, subfolder, img_type)
+                except (CudaOOMError, ComfyUIExecutionError):
+                    raise
+                except Exception as exc:
+                    logger.debug(f"⏳ [Polling] Ожидание завершения {prompt_id} на {node_url}... ({exc})")
+
+                await asyncio.sleep(2.0)
+
+        raise RenderTimeoutError(f"Таймаут поллинга /history/{prompt_id} ({timeout_sec}с) на {node_url}")
+
+    async def _fetch_output_from_history(self, node_url: str, prompt_id: str) -> bytes:
+        """Извлечение имени файла из истории и загрузка готового медиа-ассета."""
+        url = f"{node_url}/history/{prompt_id}"
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(url, timeout=15.0)
+            resp.raise_for_status()
+            history = resp.json()
+
+            task_info = history.get(prompt_id, {})
+            outputs = task_info.get("outputs", {})
+            for node_id, node_output in outputs.items():
+                images = node_output.get("images", [])
+                if images:
+                    filename = images[0].get("filename")
+                    subfolder = images[0].get("subfolder", "")
+                    img_type = images[0].get("type", "output")
+                    return await self._fetch_image_bytes(node_url, filename, subfolder, img_type)
+
+        raise RuntimeError(f"В истории ComfyUI ({prompt_id}) отсутствуют сгенерированные изображения.")
+
+    async def _fetch_image_bytes(
+        self,
+        node_url: str,
+        filename: str,
+        subfolder: str = "",
+        type_: str = "output"
+    ) -> bytes:
+        """Скачивание бинарных данных изображения через /view."""
+        params = {"filename": filename, "subfolder": subfolder, "type": type_}
+        url = f"{node_url}/view"
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(url, params=params, timeout=60.0)
+            resp.raise_for_status()
+            return resp.content
