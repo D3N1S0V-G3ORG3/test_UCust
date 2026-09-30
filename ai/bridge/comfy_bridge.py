@@ -150,8 +150,8 @@ class ComfyUIBridge:
     Асинхронный отказоустойчивый мост взаимодействия с ComfyUI кластером.
     """
 
-    def __init__(self, gpu_pool: Optional[GPULoadBalancer] = None):
-        self.pool = gpu_pool or GPULoadBalancer()
+    def __init__(self, gpu_pool: Optional[GPULoadBalancer] = None, pool: Optional[GPULoadBalancer] = None):
+        self.pool = pool or gpu_pool or GPULoadBalancer()
 
     async def render_asset(
         self,
