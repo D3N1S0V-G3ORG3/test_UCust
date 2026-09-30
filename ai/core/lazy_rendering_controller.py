@@ -126,6 +126,7 @@ class MultiChannelPostBundle(BaseModel):
     """
     Единый кроссплатформенный пакет публикации для активных соцсетей клиента.
     Содержит общее изображение/медиа и адаптированные текстовые варианты под каждую активную платформу.
+    Поддерживает Partial Success: успешные посты сохраняются в variants, а сбои — в errors.
     """
     bundle_id: str = Field(default_factory=lambda: f"bundle_{uuid.uuid4().hex[:10]}")
     brand_id: str
@@ -133,10 +134,12 @@ class MultiChannelPostBundle(BaseModel):
     target_date: datetime = Field(default_factory=datetime.utcnow)
     active_channels: List[str] = Field(default_factory=list, description="Список реально подключенных соцсетей")
     variants: Dict[str, PostDraft] = Field(default_factory=dict, description="Адаптированные черновики {platform: PostDraft}")
+    errors: Dict[str, str] = Field(default_factory=dict, description="Ошибки генерации по каналам {platform: error_message} для точечного Retry")
     selected_sku: Optional[Dict[str, Any]] = None
     disambiguation_chips: List[Dict[str, Any]] = Field(default_factory=list)
     image_specs: List[ImageGenerationSpec] = Field(default_factory=list)
     rendered_image_urls: List[str] = Field(default_factory=list)
+    base_fact_sheet: Optional[Dict[str, Any]] = Field(default=None, description="Единый FactSheet, использованный для всех генераций")
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 

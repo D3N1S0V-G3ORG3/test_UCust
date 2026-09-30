@@ -473,37 +473,66 @@ class ContentGenerationEngine:
                 top_k=3
             )
 
-        # 3. Параллельная генерация адаптированных черновиков только для активных каналов
-        tasks = []
-        for ch in active_channels:
-            tasks.append(
-                self.generate_post(
-                    project_id=project_id,
-                    topic=actual_topic,
-                    profile=profile,
-                    recent_posts=None,
-                    aspect_ratio=aspect_ratio,
-                    target_channel=ch,
-                    sku_id=sku_id,
-                    fact_sheet=fact_sheet,
-                    rag_facts=rag_facts
-                )
-            )
+        # 3. Изолированная генерация с ограничением конкурентности и защитой от частичных отказов (Partial Success)
+        if not hasattr(self, "_llm_semaphore") or self._llm_semaphore is None:
+            self._llm_semaphore = asyncio.Semaphore(2)
 
-        draft_results: List[PostDraft] = await asyncio.gather(*tasks)
-        variants = {d.target_channel: d for d in draft_results}
+        async def _safe_generate(ch: str) -> Tuple[str, Dict[str, Any]]:
+            async with self._llm_semaphore:
+                try:
+                    draft = await self.generate_post(
+                        project_id=project_id,
+                        topic=actual_topic,
+                        profile=profile,
+                        recent_posts=None,
+                        aspect_ratio=aspect_ratio,
+                        target_channel=ch,
+                        sku_id=sku_id,
+                        fact_sheet=fact_sheet,
+                        rag_facts=rag_facts
+                    )
+                    return ch, {"status": "success", "data": draft}
+                except Exception as exc:
+                    logger.error(f"❌ [ContentGenerationEngine] Локальный сбой канала '{ch}': {exc}", exc_info=True)
+                    return ch, {"status": "error", "error_trace": str(exc)}
 
-        # Общие спецификации изображений берем из первого сгенерированного черновика
-        shared_image_specs = draft_results[0].image_specs if draft_results else []
+        # Гарантированное ожидание всех тасок без прерывания при первой ошибке (return_exceptions=True)
+        results = await asyncio.gather(*(_safe_generate(ch) for ch in active_channels), return_exceptions=True)
+
+        variants: Dict[str, PostDraft] = {}
+        errors: Dict[str, str] = {}
+        shared_image_specs: List[ImageGenerationSpec] = []
+
+        for item in results:
+            if isinstance(item, Exception):
+                logger.error(f"❌ Непредвиденное исключение задачи: {item}")
+                continue
+            ch_name, res_dict = item
+            if res_dict.get("status") == "success":
+                draft = res_dict["data"]
+                variants[ch_name] = draft
+                if not shared_image_specs and draft.image_specs:
+                    shared_image_specs = draft.image_specs
+            else:
+                errors[ch_name] = res_dict.get("error_trace", "Unknown generation error")
+
+        fact_sheet_dump = None
+        if fact_sheet:
+            if hasattr(fact_sheet, "model_dump"):
+                fact_sheet_dump = fact_sheet.model_dump()
+            elif hasattr(fact_sheet, "__dict__"):
+                fact_sheet_dump = fact_sheet.__dict__
 
         bundle = MultiChannelPostBundle(
             brand_id=project_id,
             topic=actual_topic,
             active_channels=active_channels,
             variants=variants,
+            errors=errors,
             selected_sku=selected_sku.model_dump() if selected_sku else None,
             disambiguation_chips=[c.model_dump() for c in resolved_chips],
-            image_specs=shared_image_specs
+            image_specs=shared_image_specs,
+            base_fact_sheet=fact_sheet_dump
         )
 
         return bundle
