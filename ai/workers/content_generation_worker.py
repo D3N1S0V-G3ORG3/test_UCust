@@ -9,6 +9,13 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional
 
+from ai.infrastructure.rabbitmq_topology import (
+    QUEUE_CONTENT_COMPLETED,
+    QUEUE_CONTENT_DELAY_5S,
+    QUEUE_CONTENT_DLQ,
+    QUEUE_CONTENT_REQUESTED,
+)
+
 logger = logging.getLogger("AIWorker")
 
 # Watchdog таймаут для активной задачи (15 минут): защищает от перманентного зависания при OOM воркера
@@ -55,11 +62,11 @@ async def handle_generate_request(
         if status == "processing":
             logger.warning(
                 f"⏳ [ConcurrentInFlight] Задача task_id={task_id} (retry={retry_count}) выполняется. "
-                f"Делегирование задержки в брокер (Delay Queue 'ai.content.generate.delay_5s')."
+                f"Делегирование задержки в брокер (Delay Queue '{QUEUE_CONTENT_DELAY_5S}')."
             )
             # 1. Публикация клона в транзитную очередь ожидания (5s TTL + DLX в основную очередь)
             await message_broker.publish(
-                queue="ai.content.generate.delay_5s",
+                queue=QUEUE_CONTENT_DELAY_5S,
                 payload=data,
                 delivery_mode=2
             )
@@ -90,7 +97,7 @@ async def handle_generate_request(
         logger.error(f"❌ [AIWorker] Фатальный сбой бизнес-логики task_id={task_id}: {biz_exc}", exc_info=True)
         try:
             await message_broker.publish(
-                queue="ai.content.generate.completed",
+                queue=QUEUE_CONTENT_COMPLETED,
                 payload={"task_id": task_id, "status": "error", "error_message": str(biz_exc)},
                 delivery_mode=2
             )
@@ -111,7 +118,7 @@ async def handle_generate_request(
     # 3. Изолированный домен транспорта при успешной генерации
     try:
         await message_broker.publish(
-            queue="ai.content.generate.completed",
+            queue=QUEUE_CONTENT_COMPLETED,
             payload={"task_id": task_id, "status": "success", "bundle_data": bundle.model_dump()},
             delivery_mode=2
         )
