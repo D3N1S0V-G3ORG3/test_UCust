@@ -9,7 +9,22 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import datetime
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
+
+try:
+    from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
+except ImportError:
+    # Фоллбэк декоратор, если tenacity не установлена в минимальном окружении
+    def retry(*args, **kwargs):
+        def decorator(f):
+            return f
+        return decorator
+    def wait_exponential(*args, **kwargs):
+        return None
+    def stop_after_attempt(*args, **kwargs):
+        return None
+    def retry_if_exception_type(*args, **kwargs):
+        return None
 
 try:
     from prompts.telegram_generation_prompt import TELEGRAM_EXPERT_PROMPT
@@ -66,8 +81,16 @@ class ContentGenerationEngine:
     6. Сборка спецификации для отложенного рендера ComfyUI (0 GPU cost на этапе черновика).
     """
 
-    def __init__(self, dev_mode: bool = True):
+    def __init__(
+        self,
+        dev_mode: bool = True,
+        concurrency_limit: int = 2,
+        config: Optional[Dict[str, Any]] = None
+    ):
         self.dev_mode = dev_mode
+        cfg = config or {}
+        self.concurrency_limit = cfg.get("LLM_CONCURRENCY_LIMIT", concurrency_limit)
+        self._llm_semaphore: Optional[asyncio.Semaphore] = None
         self.audit_agent = AuditDeduplicationAgent(custom_threshold=0.82)
         try:
             from core.llm_provider import SaigaLLMSkill
@@ -81,6 +104,43 @@ class ContentGenerationEngine:
             self.llm = SaigaLLMSkill()
         else:
             self.llm = None
+
+    def _get_semaphore(self) -> asyncio.Semaphore:
+        """
+        Ленивая, но task-safe инициализация семафора строго в активном Event Loop.
+        """
+        if self._llm_semaphore is None:
+            self._llm_semaphore = asyncio.Semaphore(self.concurrency_limit)
+        return self._llm_semaphore
+
+    # Локальный транзитный retry (до 3 попыток) с экспоненциальной задержкой (1s, 2s, 4s)
+    @retry(
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        stop=stop_after_attempt(3),
+        retry=retry_if_exception_type((TimeoutError, ConnectionError, OSError)),
+        reraise=True
+    )
+    async def _call_llm_api(self, **kwargs) -> PostDraft:
+        """
+        Вызов генерации поста с локальным транзитным retry при сетевых сбоях.
+        """
+        return await self.generate_post(**kwargs)
+
+    async def _safe_generate(self, ch: str, **kwargs) -> Tuple[str, Dict[str, Any]]:
+        """
+        Изолированная генерация канала с ограничением конкурентности и защитой от системных прерываний.
+        """
+        semaphore = self._get_semaphore()
+        async with semaphore:
+            try:
+                draft = await self._call_llm_api(target_channel=ch, **kwargs)
+                return ch, {"status": "success", "data": draft}
+            except asyncio.CancelledError:
+                # Обязательный проброс отмены задачи наверх (SIGTERM, таймауты FastAPI/Celery)
+                raise
+            except Exception as exc:
+                logger.error(f"❌ [ContentGenerationEngine] Локальный сбой канала '{ch}': {exc}", exc_info=True)
+                return ch, {"status": "error", "error_trace": str(exc)}
 
     async def generate_post(
         self,
@@ -474,40 +534,29 @@ class ContentGenerationEngine:
             )
 
         # 3. Изолированная генерация с ограничением конкурентности и защитой от частичных отказов (Partial Success)
-        if not hasattr(self, "_llm_semaphore") or self._llm_semaphore is None:
-            self._llm_semaphore = asyncio.Semaphore(2)
+        tasks = [
+            self._safe_generate(
+                ch=ch,
+                project_id=project_id,
+                topic=actual_topic,
+                profile=profile,
+                recent_posts=None,
+                aspect_ratio=aspect_ratio,
+                sku_id=sku_id,
+                fact_sheet=fact_sheet,
+                rag_facts=rag_facts
+            )
+            for ch in active_channels
+        ]
 
-        async def _safe_generate(ch: str) -> Tuple[str, Dict[str, Any]]:
-            async with self._llm_semaphore:
-                try:
-                    draft = await self.generate_post(
-                        project_id=project_id,
-                        topic=actual_topic,
-                        profile=profile,
-                        recent_posts=None,
-                        aspect_ratio=aspect_ratio,
-                        target_channel=ch,
-                        sku_id=sku_id,
-                        fact_sheet=fact_sheet,
-                        rag_facts=rag_facts
-                    )
-                    return ch, {"status": "success", "data": draft}
-                except Exception as exc:
-                    logger.error(f"❌ [ContentGenerationEngine] Локальный сбой канала '{ch}': {exc}", exc_info=True)
-                    return ch, {"status": "error", "error_trace": str(exc)}
-
-        # Гарантированное ожидание всех тасок без прерывания при первой ошибке (return_exceptions=True)
-        results = await asyncio.gather(*(_safe_generate(ch) for ch in active_channels), return_exceptions=True)
+        # Ожидание всех задач через изолированный _safe_generate (CancelledError пробрасывается наверх)
+        results = await asyncio.gather(*tasks)
 
         variants: Dict[str, PostDraft] = {}
         errors: Dict[str, str] = {}
         shared_image_specs: List[ImageGenerationSpec] = []
 
-        for item in results:
-            if isinstance(item, Exception):
-                logger.error(f"❌ Непредвиденное исключение задачи: {item}")
-                continue
-            ch_name, res_dict = item
+        for ch_name, res_dict in results:
             if res_dict.get("status") == "success":
                 draft = res_dict["data"]
                 variants[ch_name] = draft

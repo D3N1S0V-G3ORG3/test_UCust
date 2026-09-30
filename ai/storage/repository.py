@@ -147,7 +147,7 @@ def get_active_connected_channels(
         if "target_channels" in profile_data and isinstance(profile_data["target_channels"], list):
             return [c.lower() for c in profile_data["target_channels"] if c]
 
-        # Словарь connected_channels
+        # Словарь или список connected_channels / social_networks
         cc = profile_data.get("connected_channels") or profile_data.get("social_networks")
         if isinstance(cc, dict):
             for ch_name, ch_info in cc.items():
@@ -155,6 +155,12 @@ def get_active_connected_channels(
                     active_channels.append(ch_name.lower())
                 elif isinstance(ch_info, bool) and ch_info:
                     active_channels.append(ch_name.lower())
+                elif isinstance(ch_info, str) and ch_info:
+                    active_channels.append(ch_name.lower())
+        elif isinstance(cc, list):
+            for ch in cc:
+                if isinstance(ch, str) and ch.lower() not in active_channels:
+                    active_channels.append(ch.lower())
 
         # Поле platforms в проекте
         platforms = profile_data.get("platforms")

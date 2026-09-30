@@ -60,7 +60,10 @@ class CleanRAGRetrieverSkill:
         1. Сначала ищет во внутреннем pgvector RAG тенанта.
         2. Если порог < 0.65 или пусто -> бесшовно вызывает AutonomousResearchGrounder.
         """
-        from skills.autonomous_research_grounder import AutonomousResearchGrounder
+        try:
+            from skills.autonomous_research_grounder import AutonomousResearchGrounder
+        except ImportError:
+            from ai.skills.autonomous_research_grounder import AutonomousResearchGrounder
         
         # 1. Попытка достать факты из локального RAG
         local_facts = await cls.retrieve_and_rerank(project_id, query, top_k=top_k)
