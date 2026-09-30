@@ -352,6 +352,20 @@ class Database:
     def create_all(self) -> None:
         try:
             Base.metadata.create_all(bind=self._engine)
+            from sqlalchemy import inspect, text
+            inspector = inspect(self._engine)
+            if "user_profiles" in inspector.get_table_names():
+                cols = {c["name"] for c in inspector.get_columns("user_profiles")}
+                with self._engine.connect() as conn:
+                    if "company_name" not in cols:
+                        conn.execute(text("ALTER TABLE user_profiles ADD COLUMN company_name VARCHAR(256)"))
+                    if "social_links" not in cols:
+                        conn.execute(text("ALTER TABLE user_profiles ADD COLUMN social_links JSON"))
+                    if "visual_grid_dna" not in cols:
+                        conn.execute(text("ALTER TABLE user_profiles ADD COLUMN visual_grid_dna JSON"))
+                    if "brand_dossier" not in cols:
+                        conn.execute(text("ALTER TABLE user_profiles ADD COLUMN brand_dossier JSON"))
+                    conn.commit()
         except Exception:
             pass
 

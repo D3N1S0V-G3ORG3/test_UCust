@@ -214,8 +214,10 @@ class ComfyUIBridge:
         post_id: str,
         dev_simulation_mode: bool = False
     ) -> bytes:
-        """Совместимый интерфейс для существующих контроллеров."""
-        from ai.bridge.comfy_workflow_templates import WorkflowBuilder
+        try:
+            from ai.bridge.comfy_workflow_templates import WorkflowBuilder
+        except ImportError:
+            from bridge.comfy_workflow_templates import WorkflowBuilder
         workflow = WorkflowBuilder.build_payload(
             prompt=spec.prompt,
             negative_prompt=spec.negative_prompt,

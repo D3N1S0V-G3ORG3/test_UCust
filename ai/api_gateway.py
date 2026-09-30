@@ -4,7 +4,16 @@ AI Service Gateway (FastAPI)
 Предоставляет REST API и WebSockets для real-time онбординга.
 """
 
+import os
 import sys
+
+_current_dir = os.path.dirname(os.path.abspath(__file__))
+_parent_dir = os.path.dirname(_current_dir)
+if _current_dir not in sys.path:
+    sys.path.insert(0, _current_dir)
+if _parent_dir not in sys.path:
+    sys.path.insert(0, _parent_dir)
+
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
 
@@ -331,9 +340,14 @@ vram_scheduler = AutoCalibratingVRAMScheduler()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 1. Старт фонового GPU-воркера очереди при запуске приложения
+    # 1. Инициализация базы данных и авто-миграция схемы
+    try:
+        await init_db()
+    except Exception as db_init_err:
+        pass
+    # 2. Старт фонового GPU-воркера очереди при запуске приложения
     await queue_manager.start_worker()
-    # 2. Фоновый прогрев GPU-моделей (Warmup Routine) для исключения холодных OOM
+    # 3. Фоновый прогрев GPU-моделей (Warmup Routine) для исключения холодных OOM
     asyncio.create_task(vram_scheduler.warmup_gpu_pipelines(orchestrator))
     yield
     # Остановка воркера при выключении
@@ -384,13 +398,30 @@ os.makedirs(os.path.join(output_static_dir, "photos"), exist_ok=True)
 app.mount("/output", StaticFiles(directory=output_static_dir), name="output")
 
 from storage.models import Base
+from storage.db import init_db
 
 try:
-    from sqlalchemy import create_engine
+    from sqlalchemy import create_engine, inspect, text
     from sqlalchemy.orm import sessionmaker
     db_engine = create_engine("sqlite:///./ai_smm_dev.db", echo=False)
     if hasattr(Base, "metadata") and Base.metadata is not None:
         Base.metadata.create_all(bind=db_engine)
+        try:
+            inspector = inspect(db_engine)
+            if "user_profiles" in inspector.get_table_names():
+                cols = {c["name"] for c in inspector.get_columns("user_profiles")}
+                with db_engine.connect() as conn:
+                    if "company_name" not in cols:
+                        conn.execute(text("ALTER TABLE user_profiles ADD COLUMN company_name VARCHAR(256)"))
+                    if "social_links" not in cols:
+                        conn.execute(text("ALTER TABLE user_profiles ADD COLUMN social_links JSON"))
+                    if "visual_grid_dna" not in cols:
+                        conn.execute(text("ALTER TABLE user_profiles ADD COLUMN visual_grid_dna JSON"))
+                    if "brand_dossier" not in cols:
+                        conn.execute(text("ALTER TABLE user_profiles ADD COLUMN brand_dossier JSON"))
+                    conn.commit()
+        except Exception:
+            pass
     SessionLocal = sessionmaker(bind=db_engine)
     db_session = SessionLocal()
 except Exception as e:
