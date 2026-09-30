@@ -1,7 +1,8 @@
 """
 File: ai/workers/content_generation_worker.py
-Stateless Event-Driven воркер с паттерном Stateful Tombstone в Redis (True Idempotency),
-изоляцией доменов отказов (Fault Domain Isolation) и маршрутизацией в DLQ.
+Stateless Event-Driven воркер с защитой от потери сообщений (Zero Message Loss),
+дифференцированной обработкой статуса 'processing' (nack requeue=True),
+паттерном Stateful Tombstone в Redis и маршрутизацией в DLQ.
 """
 
 from __future__ import annotations
@@ -25,32 +26,40 @@ async def handle_generate_request(
     """
     Обработчик очереди ai.content.generate.requested.
 
-    1. Истинная идемпотентность (Stateful Tombstone): отказ от delete(lock_key). Фиксация
-       состояний (processing -> completed / failed / dlq_routed) в Redis на 24 часа.
-    2. Fault Domain Isolation: строгое разделение исключений бизнес-логики и сбоев брокера.
-    3. Retry Partitioning: разделение ключей идемпотентности при повторах (retry_count).
+    1. Zero Message Loss / In-Flight Protection: если статус 'processing', сообщение
+       возвращается в очередь (nack requeue=True) на случай гибели первого воркера.
+    2. Safe DropDuplicate: сообщение удаляется (ack()) ТОЛЬКО при терминальных статусах
+       ('completed', 'failed', 'dlq_routed').
+    3. Fault Domain Isolation: строгое разделение исключений бизнес-логики и сбоев брокера.
     4. Poison Message Protection: маршрутизация в DLQ (nack с requeue=False) при сбое транспорта.
     """
     data: Dict[str, Any] = message.payload
     task_id: Optional[int] = data.get("task_id")
     project_id: Optional[str] = data.get("project_id")
-    retry_count: int = data.get("retry_count", 1)
+    retry_count: int = data.get("retry_count", 0)
 
     # Изоляция ключа попытки (для легитимных ретраев со стороны Core-бэкенда)
-    lock_key: str = f"lock:task:{task_id}" if retry_count <= 1 else f"lock:task:{task_id}:retry_{retry_count}"
+    lock_key: str = f"lock:task:{task_id}:retry_{retry_count}"
 
     # 1. Атомарный захват или проверка существующего статуса (Stateful Tombstone)
-    lock_acquired = await redis_client.set(
-        lock_key,
-        "processing",
-        ex=TASK_STATE_TTL_SECONDS,
-        nx=True
-    )
-    if not lock_acquired:
-        current_status = await redis_client.get(lock_key)
+    if not await redis_client.set(lock_key, "processing", ex=TASK_STATE_TTL_SECONDS, nx=True):
+        raw_status = await redis_client.get(lock_key)
+        status = raw_status.decode("utf-8") if isinstance(raw_status, bytes) else str(raw_status)
+
+        if status == "processing":
+            # Критическая ветка: оригинальный воркер еще работает (или упал до выставления статуса).
+            # Категорически запрещено делать ack(). Возвращаем в очередь для предотвращения потери задачи.
+            logger.warning(
+                f"⏳ [ConcurrentInFlight] Конкурентная доставка. Задача task_id={task_id} (retry={retry_count}) "
+                f"еще выполняется другим воркером. Выполняется Requeue (nack requeue=True)."
+            )
+            await message.nack(requeue=True)
+            return
+
+        # Терминальные статусы ('completed', 'failed', 'dlq_routed') -> Безопасный DropDuplicate
         logger.warning(
-            f"⚠️ [Idempotency] Задача task_id={task_id} (retry={retry_count}) отброшена как дубликат. "
-            f"Текущий статус в Redis: '{current_status}'."
+            f"⚠️ [Idempotency] Отбрасывание терминального дубликата task_id={task_id} (retry={retry_count}). "
+            f"Статус в Redis: '{status}'. Выполняется ack()."
         )
         await message.ack()
         return
@@ -75,7 +84,7 @@ async def handle_generate_request(
                 delivery_mode=2
             )
             await message.ack()
-            # Фиксация терминального статуса провала в Redis (не удаление!)
+            # Фиксация терминального статуса провала в Redis
             await redis_client.set(lock_key, "failed", ex=TASK_STATE_TTL_SECONDS)
         except Exception as broker_exc:
             # Poison Message Guard: сбой транспорта при отправке ошибки -> немедленный сброс в DLQ
@@ -96,7 +105,7 @@ async def handle_generate_request(
             delivery_mode=2
         )
         await message.ack()
-        # Фиксация терминального статуса успеха в Redis (не удаление!)
+        # Фиксация терминального статуса успеха в Redis
         await redis_client.set(lock_key, "completed", ex=TASK_STATE_TTL_SECONDS)
         logger.info(f"✅ [AIWorker] Генерация task_id={task_id} успешно завершена, статус 'completed' зафиксирован.")
     except Exception as broker_exc:
