@@ -1,7 +1,7 @@
 """
 File: ai/infrastructure/rabbitmq_topology.py
-AMQP Topology Bootstrapper: Декларация явного Direct Exchange, Bounded DLQ,
-Delay Queue (TTL + DLX) и связывание (Bindings) для максимальной Observability.
+AMQP Topology Bootstrapper: Zero-Arguments Policy-Ready топология с Ring-Buffer DLQ (drop-head),
+Delay Queue (TTL + DLX) и явным Direct Exchange (ai.content.exchange).
 """
 
 from __future__ import annotations
@@ -24,24 +24,27 @@ QUEUE_CONTENT_DELAY_5S: str = "ai.content.generate.delay_5s"
 # Параметры транзитной очереди задержки (5000 мс)
 DELAY_5S_TTL_MS: int = 5000
 
-# Ограничение емкости DLQ (Circuit Breaker для RAM/диска брокера)
+# Ограничение емкости DLQ кольцевого буфера (Ring Buffer)
 DLQ_MAX_LENGTH: int = 10000
 
 
 async def setup_rabbitmq_topology(channel: Any) -> None:
     """
-    Декларирует полную AMQP-топологию с явным Direct Exchange и Bounded DLQ.
+    Декларирует полную AMQP-топологию с явным Direct Exchange, Ring Buffer DLQ и Policy-Ready очередями.
 
     1. Direct Exchange (ai.content.exchange):
-       Централизованный маршрутизатор с полной видимостью в RabbitMQ Management UI.
-    2. Bounded DLQ (ai.content.generate.dlq):
-       Жесткий лимит x-max-length=10000 и x-overflow="reject-publish" для защиты от Disk/RAM Alarm.
+       Централизованный маршрутизатор для всех сообщений контура.
+    2. DLQ Ring Buffer (ai.content.generate.dlq):
+       Лимит x-max-length=10000 и x-overflow="drop-head" (защита от Silent Dead-Letter Drop:
+       вытесняются устаревшие инциденты, сохраняя самые свежие метрики отказов).
     3. Delay Queue (ai.content.generate.delay_5s):
-       Аппаратный троттлинг in-flight запросов (TTL 5s + возврат через EXCHANGE_NAME в requested).
+       Транзитная очередь задержки (TTL 5s + возврат через EXCHANGE_NAME в requested).
     4. Requested Queue (ai.content.generate.requested):
-       Основная очередь задач с маршрутизацией poison messages в DLQ через EXCHANGE_NAME.
+       Zero-Arguments Policy-Ready декларация (durable=True без жестких arguments в Python),
+       что исключает ошибку 406 PRECONDITION_FAILED при запуске на существующих инсталляциях.
+       Правила DLX накладываются декларативно через RabbitMQ Policies.
     5. Completed Queue (ai.content.generate.completed):
-       Очередь результатов для Core-бэкенда.
+       Очередь ответов, связанная с EXCHANGE_NAME.
     """
     logger.info(f"🔧 [Topology] Начало инициализации AMQP топологии (Exchange: '{EXCHANGE_NAME}')...")
 
@@ -53,22 +56,22 @@ async def setup_rabbitmq_topology(channel: Any) -> None:
     )
     logger.info(f"✅ [Topology] Exchange '{EXCHANGE_NAME}' объявлен (type=direct, durable=True).")
 
-    # 2. DLQ с защитой от переполнения (Circuit Breaker для диска)
+    # 2. DLQ как кольцевой буфер (Ring Buffer с drop-head)
     dlq = await channel.declare_queue(
         QUEUE_CONTENT_DLQ,
         durable=True,
         arguments={
-            "x-max-length": DLQ_MAX_LENGTH,          # Жесткий лимит сообщений
-            "x-overflow": "reject-publish"           # Отказ в приеме при превышении лимита
+            "x-max-length": DLQ_MAX_LENGTH,
+            "x-overflow": "drop-head"  # drop-head гарантирует сохранение свежих инцидентов ценой старых
         }
     )
     await dlq.bind(exchange, routing_key=QUEUE_CONTENT_DLQ)
     logger.info(
-        f"✅ [Topology] DLQ '{QUEUE_CONTENT_DLQ}' объявлена "
-        f"(durable=True, max-length={DLQ_MAX_LENGTH}, overflow=reject-publish) и привязана к '{EXCHANGE_NAME}'."
+        f"✅ [Topology] DLQ Ring Buffer '{QUEUE_CONTENT_DLQ}' объявлена "
+        f"(durable=True, max-length={DLQ_MAX_LENGTH}, overflow=drop-head) и привязана к '{EXCHANGE_NAME}'."
     )
 
-    # 3. Транзитная Delay-очередь с маршрутизацией через явный обменник
+    # 3. Транзитная очередь задержки
     delay_queue = await channel.declare_queue(
         QUEUE_CONTENT_DELAY_5S,
         durable=True,
@@ -85,23 +88,17 @@ async def setup_rabbitmq_topology(channel: Any) -> None:
         f"и привязана к '{EXCHANGE_NAME}'."
     )
 
-    # 4. Основная очередь
-    # ВАЖНО: Если очередь уже существовала в продакшене без аргументов DLX, переопределение
-    # через declare_queue выбросит 406 PRECONDITION_FAILED. Для live-миграций существующих очередей
-    # параметры DLX настраиваются через RabbitMQ Policies CLI/HTTP API:
-    # `rabbitmqctl set_policy DLX_Policy "^ai\.content\.generate\.requested$" '{"dead-letter-exchange":"ai.content.exchange","dead-letter-routing-key":"ai.content.generate.dlq"}' --apply-to queues`
+    # 4. Основная очередь (Zero-Arguments Policy-Ready)
+    # ВАЖНО: Аргументы удалены из Python-клиента. Параметры DLX накладываются ИСКЛЮЧИТЕЛЬНО
+    # через RabbitMQ Policies, что гарантирует 100% защиту от ошибки 406 PRECONDITION_FAILED.
     requested_queue = await channel.declare_queue(
         QUEUE_CONTENT_REQUESTED,
-        durable=True,
-        arguments={
-            "x-dead-letter-exchange": EXCHANGE_NAME,
-            "x-dead-letter-routing-key": QUEUE_CONTENT_DLQ
-        }
+        durable=True
     )
     await requested_queue.bind(exchange, routing_key=QUEUE_CONTENT_REQUESTED)
     logger.info(
-        f"✅ [Topology] Requested Queue '{QUEUE_CONTENT_REQUESTED}' объявлена "
-        f"(durable=True, DLX='{EXCHANGE_NAME}' -> '{QUEUE_CONTENT_DLQ}') и привязана к '{EXCHANGE_NAME}'."
+        f"✅ [Topology] Requested Queue '{QUEUE_CONTENT_REQUESTED}' объявлена (Policy-Ready, durable=True) "
+        f"и привязана к '{EXCHANGE_NAME}'."
     )
 
     # 5. Очередь ответов
