@@ -2,10 +2,10 @@
 File: ai/bridge/comfy_bridge.py
 Отказоустойчивый сетевой оркестратор для удаленного пула ComfyUI GPU-воркеров.
 Реализует:
-1. Балансировку по наименьшей нагрузке (Least Load VRAM Routing).
-2. Автономный рендеринг: fallback на HTTP polling /history/{prompt_id} при обрыве WebSocket.
-3. Распознавание и изоляцию CUDA OOM (mark_node_degraded) без губительного CPU Fallback.
-4. Watchdog Circuit Breaker (120s для изображений, 300s для видео, ping_interval=10).
+1. Балансировку по наименьшей нагрузке (Least Load VRAM Routing) с чистым RAII-учетом ресурсов.
+2. Автономный рендеринг: бесшовный переход на HTTP polling /history/{prompt_id} при обрыве WebSocket.
+3. Распознавание и аппаратную изоляцию CUDA OOM (mark_node_degraded) без опасного CPU Fallback.
+4. Строгий детерминированный SLA: единый глобальный asyncio.wait_for (120s / 300s) на весь пайплайн.
 """
 
 from __future__ import annotations
@@ -67,7 +67,7 @@ class GPULoadBalancer:
     """
     Балансировщик нагрузки пула удаленных GPU-воркеров.
     Маршрутизирует задачи по стратегии Least Load (наибольший запас доступной VRAM)
-    и временно выводит сбойные ноды при обнаружении CUDA OOM.
+    и изолирует сбойные ноды при обнаружении CUDA OOM с сохранением RAII-консистентности.
     """
 
     def __init__(self, node_urls: Optional[List[str]] = None):
@@ -116,7 +116,9 @@ class GPULoadBalancer:
             return chosen_node.url
 
     async def release_node(self, node_url: str, vram_gb: float = 6.0) -> None:
-        """Освобождение VRAM-квоты ноды после завершения рендера."""
+        """
+        Симметричное освобождение VRAM-квоты ноды (принцип RAII).
+        """
         async with self._lock:
             for n in self.nodes:
                 if n.url == node_url.rstrip("/"):
@@ -126,16 +128,16 @@ class GPULoadBalancer:
 
     async def mark_node_degraded(self, node_url: str, cooldown_seconds: int = 180) -> None:
         """
-        Маркировка ноды как деградировавшей при CUDA OOM с кулдауном.
-        Нода изолируется от получения новых задач на период cooldown_seconds.
+        Маркировка ноды как деградировавшей при CUDA OOM.
+        Метка (is_healthy = False) исключает ноду из новых назначений,
+        но счетчики VRAM не обнуляются принудительно — освобождение выполняется
+        строго симметрично через finally-блоки активных корутин (защита от VRAM Underflow).
         """
         async with self._lock:
             for n in self.nodes:
                 if n.url == node_url.rstrip("/"):
                     n.is_healthy = False
                     n.degraded_until = time.time() + cooldown_seconds
-                    n.allocated_vram_gb = 0.0
-                    n.active_tasks_count = 0
                     logger.critical(
                         f"💥 [GPULoadBalancer] Нода {n.url} поймала CUDA OOM! "
                         f"Изоляция из пула на {cooldown_seconds}с (до {time.strftime('%H:%M:%S', time.localtime(n.degraded_until))})."
@@ -161,9 +163,9 @@ class ComfyUIBridge:
         """
         Основной метод рендеринга ассета:
         1. Least Load VRAM маршрутизация.
-        2. Watchdog таймауты (120с / 300с).
+        2. Жесткий глобальный SLA таймаут (120с / 300с) на весь процесс.
         3. Мониторинг WebSocket с фолбэком на HTTP polling при разрыве TCP.
-        4. Изоляция CUDA OOM и освобождение ресурсов.
+        4. Изоляция CUDA OOM и RAII-освобождение ресурсов.
         """
         if dev_simulation_mode:
             logger.info(f"🛠️ [DEV MODE] Симуляция генерации ассета для {post_id} (0 GPU).")
@@ -176,35 +178,34 @@ class ComfyUIBridge:
         vram_cost = 12.0 if is_video else 6.0
         timeout_sec = 300 if is_video else 120
         node_url = await self.pool.acquire_node(vram_required_gb=vram_cost)
-        prompt_id: Optional[str] = None
 
-        try:
-            # 1. Постановка в очередь ComfyUI (REST)
+        async def _execute_with_fallback() -> bytes:
             prompt_id = await self._queue_prompt(node_url, workflow_json)
             logger.info(f"📤 [ComfyUI] Задача {prompt_id} отправлена на {node_url} (timeout={timeout_sec}s)")
-
-            # 2. Мониторинг по WebSocket с тайм-аутом Circuit Breaker
             try:
-                asset_bytes = await asyncio.wait_for(
-                    self._monitor_websocket(node_url, prompt_id),
-                    timeout=timeout_sec
-                )
-                return asset_bytes
+                return await self._monitor_websocket(node_url, prompt_id)
             except (websockets.ConnectionClosed, websockets.WebSocketException, httpx.TransportError, httpx.NetworkError, ConnectionError, OSError) as net_err:
                 logger.warning(
                     f"⚠️ [ComfyUI] Обрыв WebSocket на {node_url} ({net_err}). "
                     f"ComfyUI продолжает автономный рендеринг. Переход в режим HTTP Polling..."
                 )
-                # 3. Фолбэк на опрос истории (Zero Asset Loss)
-                return await self._poll_history(node_url, prompt_id, timeout_sec=60)
-            except asyncio.TimeoutError:
-                raise RenderTimeoutError(f"Превышен лимит времени {timeout_sec}с при рендере на {node_url}")
+                # Поллинг подчиняется родительскому глобальному таймауту asyncio.wait_for
+                return await self._poll_history(node_url, prompt_id)
 
+        try:
+            # Глобальный Circuit Breaker на весь пайплайн (очередь + мониторинг + поллинг)
+            return await asyncio.wait_for(
+                _execute_with_fallback(),
+                timeout=timeout_sec
+            )
+        except asyncio.TimeoutError:
+            raise RenderTimeoutError(f"Превышен глобальный SLA таймаут {timeout_sec}с при рендере на {node_url}")
         except CudaOOMError:
             # Изоляция деградировавшей ноды без CPU Fallback
             await self.pool.mark_node_degraded(node_url)
             raise
         finally:
+            # RAII: Симметричный декремент ресурсов гарантирован при любом исходе
             await self.pool.release_node(node_url, vram_gb=vram_cost)
 
     async def render_image(
@@ -264,18 +265,18 @@ class ComfyUIBridge:
                 if msg_type == "executed" and data.get("prompt_id") == prompt_id:
                     return await self._fetch_output_from_history(node_url, prompt_id)
 
-        # Если сокет закрылся без executed
+        # Если сокет закрылся без явного executed
         return await self._fetch_output_from_history(node_url, prompt_id)
 
-    async def _poll_history(self, node_url: str, prompt_id: str, timeout_sec: int = 60) -> bytes:
+    async def _poll_history(self, node_url: str, prompt_id: str) -> bytes:
         """
         Фолбэк опрос эндпоинта /history/{prompt_id} при сетевом сбое сокета.
+        Подчиняется родительскому глобальному таймауту asyncio.wait_for.
         """
-        start_time = time.time()
         url = f"{node_url}/history/{prompt_id}"
 
         async with httpx.AsyncClient() as client:
-            while time.time() - start_time < timeout_sec:
+            while True:
                 try:
                     resp = await client.get(url, timeout=10.0)
                     if resp.status_code == 200:
@@ -306,8 +307,6 @@ class ComfyUIBridge:
                     logger.debug(f"⏳ [Polling] Ожидание завершения {prompt_id} на {node_url}... ({exc})")
 
                 await asyncio.sleep(2.0)
-
-        raise RenderTimeoutError(f"Таймаут поллинга /history/{prompt_id} ({timeout_sec}с) на {node_url}")
 
     async def _fetch_output_from_history(self, node_url: str, prompt_id: str) -> bytes:
         """Извлечение имени файла из истории и загрузка готового медиа-ассета."""
