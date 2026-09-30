@@ -137,21 +137,21 @@ def get_active_connected_channels(
     profile_data: Optional[Dict[str, Any]] = None
 ) -> List[str]:
     """
-    Read Path (O(1)):
+    Read Path (O(1) CPU Fast Path):
     Извлекает список активных каналов из БД / профиля.
-    Использует строгий ActiveChannelsDTO (принимает только чистый List[str] или Dict[str, bool]).
+    Использует строгий ActiveChannelsDTO (принимает исключительно канонический List[str]).
     Гарантирует детерминированный контракт List[str] с фоллбэком на ['telegram'].
     """
     raw_sources: List[Any] = []
 
     # 1. Проверка переданного словаря профиля
     if profile_data and isinstance(profile_data, dict):
-        for key in ("connected_channels", "target_channels", "platforms", "social_networks", "social_links"):
+        for key in ("connected_channels", "target_channels", "platforms"):
             val = profile_data.get(key)
             if val is not None:
                 raw_sources.append(val)
 
-    # 2. Извлечение из базы данных, если в profile_data пусто
+    # 2. Извлечение из базы данных (Single Source of Truth: connected_channels JSONB)
     if not raw_sources and database and user_id:
         session = database.get_session()
         try:
@@ -161,12 +161,8 @@ def get_active_connected_channels(
             else:
                 profile = query.filter(UserProfile.external_user_id == str(user_id)).first()
 
-            if profile:
-                # 1. Приоритет канонической колонке JSONB connected_channels
-                if hasattr(profile, "connected_channels") and profile.connected_channels:
-                    raw_sources.append(profile.connected_channels)
-                elif profile.social_links:
-                    raw_sources.append(profile.social_links)
+            if profile and hasattr(profile, "connected_channels") and profile.connected_channels:
+                raw_sources.append(profile.connected_channels)
         except Exception:
             pass
         finally:

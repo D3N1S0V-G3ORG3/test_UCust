@@ -347,18 +347,26 @@ CHANNEL_CANONICAL_MAP: Dict[str, str] = {
 }
 
 
+# Максимальное количество одновременно подключенных каналов (Boundary Limit / Circuit Breaker)
+MAX_CONNECTED_CHANNELS: int = 10
+
+
 class ChannelRegistrationDTO(BaseModel):
     """
     Shift-Left Валидация (Write Path):
     Применяется при сохранении профиля, регистрации каналов и обработке HTTP-запросов (POST/PUT).
-    Принимает любые пользовательские форматы (алиасы, URL-мапы, флаги), нормализует их
-    и возвращает чистый канонический массив строк List[str] для записи в БД.
+    Принимает любые пользовательские форматы (алиасы, URL-мапы, флаги), нормализует их,
+    проверяет лимит MAX_CONNECTED_CHANNELS и возвращает чистый канонический массив строк List[str].
     """
-    channels: List[str] = Field(default_factory=list, description="Канонический список каналов для записи в БД")
+    channels: List[str] = Field(
+        default_factory=list,
+        max_length=MAX_CONNECTED_CHANNELS,
+        description=f"Канонический список каналов для записи в БД (макс. {MAX_CONNECTED_CHANNELS})"
+    )
 
     @field_validator("channels", mode="before")
     @classmethod
-    def canonicalize_write_payload(cls, raw_data: Any) -> List[str]:
+    def normalize_and_limit(cls, raw_data: Any) -> List[str]:
         if raw_data is None:
             return []
 
@@ -405,34 +413,40 @@ class ChannelRegistrationDTO(BaseModel):
             if norm and norm not in canonical_list:
                 canonical_list.append(norm)
 
+        # Граничное ограничение (Circuit Breaking)
+        if len(canonical_list) > MAX_CONNECTED_CHANNELS:
+            raise ValueError(
+                f"Exceeded maximum allowed connected channels limit ({MAX_CONNECTED_CHANNELS}), got {len(canonical_list)}"
+            )
+
         return canonical_list
 
 
 class ActiveChannelsDTO(BaseModel):
     """
-    Строгий DTO слоя чтения (Read Path - O(1)):
-    Чтение принимает только каноничный список или строгий словарь булевых флагов.
-    Никаких тяжелых парсингов запятых или резолва 'TG' -> 'telegram' на этапе чтения.
-    Если данные в БД повреждены — выбрасывает ошибку консистентности.
+    Строгий DTO слоя чтения (Read Path - O(1) CPU Fast Path):
+    Принимает ИСКЛЮЧИТЕЛЬНО каноничный List[str].
+    Вся поддержка Dict[str, bool] удалена (Dead Code Elimination).
+    Любое отклонение от List[str] является нарушением Single Source of Truth и вызывает исключение.
     """
-    channels: List[str] = Field(default_factory=list, description="Строгий список каналов")
+    channels: List[str] = Field(
+        default_factory=list,
+        max_length=MAX_CONNECTED_CHANNELS,
+        description=f"Строгий список каналов (макс. {MAX_CONNECTED_CHANNELS})"
+    )
 
     @field_validator("channels", mode="before")
     @classmethod
-    def require_strict_format(cls, raw_data: Any) -> List[str]:
+    def require_strict_list(cls, raw_data: Any) -> List[str]:
         if raw_data is None:
             return []
-        # 1. Строгий массив строк (JSONB array)
-        if isinstance(raw_data, list):
-            if all(isinstance(x, str) for x in raw_data):
-                return raw_data
-            raise ValueError(f"Corrupted DB state: List elements must all be str, got {[type(x) for x in raw_data]}")
-        # 2. Строгий словарь булевых флагов
-        if isinstance(raw_data, dict):
-            if all(isinstance(v, bool) for v in raw_data.values()):
-                return [ch for ch, is_active in raw_data.items() if is_active is True]
-            raise ValueError(f"Corrupted DB state: Dict values must all be bool, got {[type(v) for v in raw_data.values()]}")
-
-        # Если данные в другом формате — это критическая ошибка консистентности БД
-        raise ValueError(f"Corrupted DB state. Expected List[str] or Dict[str, bool], got {type(raw_data)}")
+        if isinstance(raw_data, list) and all(isinstance(x, str) for x in raw_data):
+            if len(raw_data) > MAX_CONNECTED_CHANNELS:
+                raise ValueError(
+                    f"Corrupted DB state: channels count {len(raw_data)} exceeds max limit ({MAX_CONNECTED_CHANNELS})"
+                )
+            return raw_data
+        raise ValueError(
+            f"Corrupted DB state: Single Source of Truth violated. Expected List[str], got {type(raw_data)}"
+        )
 
