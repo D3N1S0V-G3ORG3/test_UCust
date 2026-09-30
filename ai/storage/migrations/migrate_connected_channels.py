@@ -48,6 +48,8 @@ ADD CONSTRAINT chk_channels_format
     CHECK (
         jsonb_typeof(connected_channels) = 'array' 
         AND jsonb_array_length(connected_channels) <= 10
+        -- Блокировка наличия любых элементов, тип которых отличается от string
+        AND NOT jsonb_path_exists(connected_channels, '$[*] ? (@.type() != "string")')
     );
 
 -- 3. Индексация для O(1) поиска пользователей по активным соцсетям (GIN Index)

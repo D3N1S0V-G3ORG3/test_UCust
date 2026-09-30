@@ -8,7 +8,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, StrictStr, field_validator
 
 
 class CopywritingFramework(str, Enum):
@@ -424,18 +424,15 @@ class ChannelRegistrationDTO(BaseModel):
 
 class ActiveChannelsDTO(BaseModel):
     """
-    Строгий DTO слоя чтения (Read Path - O(1) CPU Fast Path):
-    Делегирует проверки типов элементов (List[str]) и длины (max_length=10) ядру Pydantic-core (Rust).
-    Исключает маскировку NULL/поврежденных состояний БД (Абсолютный Fail-Fast).
+    Строгий DTO слоя чтения (Read Path - Zero-Python Validation):
+    strict=True блокирует неявное приведение типов (Type Coercion).
+    Проверка контейнера (list), гомогенности элементов (StrictStr) и границы (max_length=10)
+    выполняется на 100% ядром Pydantic-core (Rust) без вызова Python-декораторов.
     """
-    channels: List[str] = Field(..., max_length=MAX_CONNECTED_CHANNELS, description=f"Строгий список каналов (макс. {MAX_CONNECTED_CHANNELS})")
-
-    @field_validator("channels", mode="before")
-    @classmethod
-    def require_strict_list(cls, raw_data: Any) -> Any:
-        # Исключительно O(1) проверка типа контейнера. Никаких Python-циклов.
-        if not isinstance(raw_data, list):
-            raise ValueError(f"Corrupted DB state: Single Source of Truth violated. Expected list, got {type(raw_data)}")
-        # Pydantic-core выполнит валидацию элементов (str) и max_length самостоятельно в Rust
-        return raw_data
+    channels: List[StrictStr] = Field(
+        ...,
+        max_length=MAX_CONNECTED_CHANNELS,
+        strict=True,
+        description=f"Строгий канонический список каналов (макс. {MAX_CONNECTED_CHANNELS})"
+    )
 

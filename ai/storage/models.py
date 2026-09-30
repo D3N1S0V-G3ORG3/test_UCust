@@ -9,6 +9,7 @@ from typing import Any, List, Optional
 
 try:
     from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, JSON, Float
+    from sqlalchemy.dialects.postgresql import JSONB
     from sqlalchemy.orm import Mapped, mapped_column, relationship
 except (ImportError, Exception):
     class _MockType:
@@ -16,8 +17,10 @@ except (ImportError, Exception):
             pass
         def __call__(self, *args, **kwargs):
             return self
+        def with_variant(self, *args, **kwargs):
+            return self
 
-    DateTime = ForeignKey = Integer = String = Text = JSON = Float = _MockType
+    DateTime = ForeignKey = Integer = String = Text = JSON = JSONB = Float = _MockType
     Mapped = Any
     def mapped_column(*args, **kwargs):
         return None
@@ -64,7 +67,12 @@ class UserProfile(Base):
     # Ссылки на соцсети, собранные Интервьюером (Telegram, VK и т.д.)
     social_links: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True, default=dict)
     # Канонический JSONB массив активных подключенных каналов (['telegram', 'vk', 'max_messenger'])
-    connected_channels: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    connected_channels: Mapped[list] = mapped_column(
+        JSONB().with_variant(JSON, "sqlite") if hasattr(JSONB, "with_variant") else JSONB,
+        nullable=False,
+        server_default="[]",
+        default=list
+    )
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
