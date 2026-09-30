@@ -1,8 +1,7 @@
 """
 File: ai/workers/content_generation_worker.py
-Stateless Event-Driven воркер с защитой от потери сообщений (Zero Message Loss),
-дифференцированной обработкой статуса 'processing' (nack requeue=True),
-паттерном Stateful Tombstone в Redis и маршрутизацией в DLQ.
+Stateless Event-Driven воркер с Watchdog TTL (защита от Spinning Poison Pill),
+Write-Ahead State коммитом, паттерном Stateful Tombstone и маршрутизацией в DLQ.
 """
 
 from __future__ import annotations
@@ -12,8 +11,11 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger("AIWorker")
 
-# Время жизни состояния задачи в Redis (24 часа для защиты от поздних дубликатов)
-TASK_STATE_TTL_SECONDS: int = 86400
+# Watchdog таймаут для активной задачи (15 минут): защищает от перманентного зависания при OOM воркера
+IN_FLIGHT_WATCHDOG_TTL_SECONDS: int = 900
+
+# Время жизни терминального состояния в Redis (24 часа): защита от повторных затрат при поздних дубликатах
+TERMINAL_STATE_TTL_SECONDS: int = 86400
 
 
 async def handle_generate_request(
@@ -26,12 +28,13 @@ async def handle_generate_request(
     """
     Обработчик очереди ai.content.generate.requested.
 
-    1. Zero Message Loss / In-Flight Protection: если статус 'processing', сообщение
-       возвращается в очередь (nack requeue=True) на случай гибели первого воркера.
-    2. Safe DropDuplicate: сообщение удаляется (ack()) ТОЛЬКО при терминальных статусах
-       ('completed', 'failed', 'dlq_routed').
-    3. Fault Domain Isolation: строгое разделение исключений бизнес-логики и сбоев брокера.
-    4. Poison Message Protection: маршрутизация в DLQ (nack с requeue=False) при сбое транспорта.
+    1. Watchdog TTL (900s): исключает Spinning Poison Pill при аппаратной гибели воркера (OOM).
+    2. Write-Ahead State Commit: персистентная запись статуса в Redis выполняется СТРОГО ДО
+       отправки message.ack() в RabbitMQ, что исключает состояние гонки при падении процесса.
+    3. Zero Message Loss / In-Flight Protection: статус 'processing' возвращает сообщение
+       в очередь (nack requeue=True).
+    4. Safe DropDuplicate: терминальные статусы ('completed', 'failed', 'dlq_routed') списываются (ack()).
+    5. Fault Domain Isolation & DLQ Routing: сбой брокера переводит задачу в 'dlq_routed' и nack(requeue=False).
     """
     data: Dict[str, Any] = message.payload
     task_id: Optional[int] = data.get("task_id")
@@ -41,17 +44,16 @@ async def handle_generate_request(
     # Изоляция ключа попытки (для легитимных ретраев со стороны Core-бэкенда)
     lock_key: str = f"lock:task:{task_id}:retry_{retry_count}"
 
-    # 1. Атомарный захват или проверка существующего статуса (Stateful Tombstone)
-    if not await redis_client.set(lock_key, "processing", ex=TASK_STATE_TTL_SECONDS, nx=True):
+    # 1. Захват блокировки с коротким Watchdog TTL (900с)
+    if not await redis_client.set(lock_key, "processing", ex=IN_FLIGHT_WATCHDOG_TTL_SECONDS, nx=True):
         raw_status = await redis_client.get(lock_key)
         status = raw_status.decode("utf-8") if isinstance(raw_status, bytes) else str(raw_status)
 
         if status == "processing":
-            # Критическая ветка: оригинальный воркер еще работает (или упал до выставления статуса).
-            # Категорически запрещено делать ack(). Возвращаем в очередь для предотвращения потери задачи.
+            # Оригинальный воркер еще выполняет задачу. Возвращаем в очередь для предотвращения потери.
             logger.warning(
-                f"⏳ [ConcurrentInFlight] Конкурентная доставка. Задача task_id={task_id} (retry={retry_count}) "
-                f"еще выполняется другим воркером. Выполняется Requeue (nack requeue=True)."
+                f"⏳ [ConcurrentInFlight] Конкурентная доставка задачи task_id={task_id} (retry={retry_count}). "
+                f"Воркер в процессе генерации. Выполняется Requeue (nack requeue=True)."
             )
             await message.nack(requeue=True)
             return
@@ -83,9 +85,9 @@ async def handle_generate_request(
                 payload={"task_id": task_id, "status": "error", "error_message": str(biz_exc)},
                 delivery_mode=2
             )
+            # Write-Ahead State: сначала фиксируем терминальный статус в Redis, затем ACK в RabbitMQ
+            await redis_client.set(lock_key, "failed", ex=TERMINAL_STATE_TTL_SECONDS)
             await message.ack()
-            # Фиксация терминального статуса провала в Redis
-            await redis_client.set(lock_key, "failed", ex=TASK_STATE_TTL_SECONDS)
         except Exception as broker_exc:
             # Poison Message Guard: сбой транспорта при отправке ошибки -> немедленный сброс в DLQ
             logger.critical(
@@ -93,8 +95,8 @@ async def handle_generate_request(
                 f"Маршрутизация сообщения в DLQ.",
                 exc_info=True
             )
+            await redis_client.set(lock_key, "dlq_routed", ex=TERMINAL_STATE_TTL_SECONDS)
             await message.nack(requeue=False)
-            await redis_client.set(lock_key, "dlq_routed", ex=TASK_STATE_TTL_SECONDS)
         return
 
     # 3. Изолированный домен транспорта при успешной генерации
@@ -104,9 +106,9 @@ async def handle_generate_request(
             payload={"task_id": task_id, "status": "success", "bundle_data": bundle.model_dump()},
             delivery_mode=2
         )
+        # Write-Ahead State: сначала фиксируем персистентный статус 'completed' в Redis, затем ACK в RabbitMQ
+        await redis_client.set(lock_key, "completed", ex=TERMINAL_STATE_TTL_SECONDS)
         await message.ack()
-        # Фиксация терминального статуса успеха в Redis
-        await redis_client.set(lock_key, "completed", ex=TASK_STATE_TTL_SECONDS)
         logger.info(f"✅ [AIWorker] Генерация task_id={task_id} успешно завершена, статус 'completed' зафиксирован.")
     except Exception as broker_exc:
         # Сбой публикации готового результата -> отправка в DLQ для ручного инспектирования
@@ -115,5 +117,5 @@ async def handle_generate_request(
             f"Маршрутизация сообщения в DLQ.",
             exc_info=True
         )
+        await redis_client.set(lock_key, "dlq_routed", ex=TERMINAL_STATE_TTL_SECONDS)
         await message.nack(requeue=False)
-        await redis_client.set(lock_key, "dlq_routed", ex=TASK_STATE_TTL_SECONDS)
