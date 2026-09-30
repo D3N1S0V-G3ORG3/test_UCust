@@ -284,7 +284,7 @@ class ContentGenerationEngine:
                 "Правило: не выдумывай несуществующие цифры и технологии, отсутствующие в списке выше."
             )
 
-        # 4. LLM Инференс
+        # 4. LLM Инференс (выполняется в отдельном потоке во избежание блокировки Event Loop)
         post_text = ""
         if self.llm:
             try:
@@ -293,9 +293,9 @@ class ContentGenerationEngine:
                         {"role": "system", "content": system_msg},
                         {"role": "user", "content": user_msg}
                     ]
-                    post_text = self.llm.generate_chat(messages=messages, max_tokens=800)
+                    post_text = await asyncio.to_thread(self.llm.generate_chat, messages=messages, max_tokens=800)
                 elif hasattr(self.llm, "generate_post"):
-                    post_text = self.llm.generate_post(topic=actual_topic, niche=niche, company_name=company_name)
+                    post_text = await asyncio.to_thread(self.llm.generate_post, topic=actual_topic, niche=niche, company_name=company_name)
             except Exception as llm_err:
                 logger.error(f"⚠️ Ошибка LLM инференса: {llm_err}")
 
