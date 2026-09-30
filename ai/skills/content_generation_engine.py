@@ -30,15 +30,28 @@ except ImportError:
     from ai.skills.ok_rich_formatter import OKPostFormatter
     from ai.skills.max_messenger_formatter import MaxMessengerFormatter
 
-from skills.rag_retriever_skill import CleanRAGRetrieverSkill
-from skills.audit_deduplication_agent import AuditDeduplicationAgent
-from skills.fact_checking_critic import FactCheckingCritic
-from skills.geo_entity_resolver import GeoEntityResolver, SKUCard
-from skills.autonomous_research_grounder import FactSheet
-from core.lazy_rendering_controller import (
-    PostDraft, PostLifecycleStatus, ContentFormat, ImageGenerationSpec, SubscriptionTier, IndustryArchetype, ShotIntent
-)
+try:
+    from skills.rag_retriever_skill import CleanRAGRetrieverSkill
+    from skills.audit_deduplication_agent import AuditDeduplicationAgent
+    from skills.fact_checking_critic import FactCheckingCritic
+    from skills.geo_entity_resolver import GeoEntityResolver, SKUCard
+    from skills.autonomous_research_grounder import FactSheet
+    from core.lazy_rendering_controller import (
+        PostDraft, MultiChannelPostBundle, PostLifecycleStatus, ContentFormat, ImageGenerationSpec, SubscriptionTier, IndustryArchetype, ShotIntent
+    )
+    from storage.repository import get_active_connected_channels
+except ImportError:
+    from ai.skills.rag_retriever_skill import CleanRAGRetrieverSkill
+    from ai.skills.audit_deduplication_agent import AuditDeduplicationAgent
+    from ai.skills.fact_checking_critic import FactCheckingCritic
+    from ai.skills.geo_entity_resolver import GeoEntityResolver, SKUCard
+    from ai.skills.autonomous_research_grounder import FactSheet
+    from ai.core.lazy_rendering_controller import (
+        PostDraft, MultiChannelPostBundle, PostLifecycleStatus, ContentFormat, ImageGenerationSpec, SubscriptionTier, IndustryArchetype, ShotIntent
+    )
+    from ai.storage.repository import get_active_connected_channels
 
+import asyncio
 logger = logging.getLogger("ContentGenerationEngine")
 
 
@@ -77,12 +90,14 @@ class ContentGenerationEngine:
         recent_posts: Optional[List[str]] = None,
         aspect_ratio: str = "1:1",
         target_channel: Optional[str] = None,
-        sku_id: Optional[str] = None
+        sku_id: Optional[str] = None,
+        fact_sheet: Optional[FactSheet] = None,
+        rag_facts: Optional[List[str]] = None
     ) -> PostDraft:
         """
         Генерирует готовый пост в статусе DRAFT_TEXT с поддержкой мгновенной привязки SKU.
         """
-        logger.info(f"✍️ [ContentGenerationEngine] Генерация поста для project_id='{project_id}', тема='{topic[:50]}', sku_id='{sku_id}'")
+        logger.info(f"✍️ [ContentGenerationEngine] Генерация поста для project_id='{project_id}', тема='{topic[:50]}', sku_id='{sku_id}', канал='{target_channel}'")
         profile = profile or {}
         about = profile.get("about", {})
         goals = profile.get("goals", {})
@@ -118,7 +133,13 @@ class ContentGenerationEngine:
                     selected_sku = chip
                     break
 
-        if selected_sku:
+        if fact_sheet:
+            # Если FactSheet уже передан (например, из мульти-бандла) — используем его
+            if rag_facts:
+                rag_context = "\n".join([f"- {spec}" for spec in rag_facts])
+            else:
+                rag_context = "\n".join([f"- {spec}" for spec in getattr(fact_sheet, "key_specs", [])]) or f"- {company_name}: {positioning}"
+        elif selected_sku:
             # Мгновенная привязка FactSheet из верифицированной карточки SKU (0 сек задержки)
             fact_sheet = FactSheet(
                 product_name=selected_sku.full_title,
@@ -259,19 +280,38 @@ class ContentGenerationEngine:
         post_text = critic_report.sanitized_text
 
         # 4.2. Платформо-специфичный детерминированный пост-процессинг
+        channel_payload: Optional[Dict[str, Any]] = None
         if "vk" in target_channel_norm or "вк" in target_channel_norm:
             vk_res = VKPostFormatter.format_vk_post(
                 text=post_text,
                 group_domain=group_domain
             )
             post_text = vk_res["post_text"]
+            channel_payload = {
+                "first_comment": vk_res.get("first_comment"),
+                "has_first_comment": vk_res.get("has_first_comment", False),
+                "hook_length_chars": vk_res.get("hook_length_chars", 0)
+            }
         elif "ok" in target_channel_norm or "одноклассники" in target_channel_norm:
-            post_text = OKPostFormatter.format_ok_post(text=post_text)
+            ok_res = OKPostFormatter.format_ok_post_payload(text=post_text)
+            post_text = ok_res["post_text"]
+            channel_payload = {
+                "snippet_url": ok_res.get("snippet_url"),
+                "attachment_links": ok_res.get("attachment_links", []),
+                "has_snippet": ok_res.get("has_snippet", False)
+            }
         elif "max" in target_channel_norm or "messenger" in target_channel_norm:
             max_res = MaxMessengerFormatter.format_max_message(text=post_text)
             post_text = max_res["message_text"]
+            channel_payload = {
+                "push_preview": max_res.get("push_preview"),
+                "sms_fallback_text": max_res.get("sms_fallback_text"),
+                "char_count": max_res.get("char_count", 0),
+                "is_within_limit": max_res.get("is_within_limit", True)
+            }
         else:  # Telegram
             post_text = TelegramRichPostFormatter.sanitize_telegram_html(text=post_text)
+            channel_payload = {"parse_mode": "HTML"}
 
         # 5. Двухфакторная матрица эстетики (Tenant Aesthetic ∩ Product Color) и классификация ShotIntent
         topic_lower = actual_topic.lower()
@@ -340,7 +380,9 @@ class ContentGenerationEngine:
             target_date=datetime.utcnow(),
             format=ContentFormat.SINGLE_SHOT,
             status=PostLifecycleStatus.DRAFT_TEXT,
+            target_channel=target_channel_norm,
             text_content=post_text,
+            channel_payload=channel_payload,
             image_specs=[image_spec],
             rendered_image_urls=[],
             vram_cost_mb=0,
@@ -349,3 +391,119 @@ class ContentGenerationEngine:
         )
 
         return post_draft
+
+    async def generate_multichannel_bundle(
+        self,
+        project_id: str,
+        topic: str,
+        target_channels: Optional[List[str]] = None,
+        profile: Optional[Dict[str, Any]] = None,
+        recent_posts: Optional[List[str]] = None,
+        aspect_ratio: str = "1:1",
+        sku_id: Optional[str] = None,
+        database: Optional[Any] = None,
+        user_id: Optional[str] = None
+    ) -> MultiChannelPostBundle:
+        """
+        Генерирует мультиплатформенный пакет публикаций (MultiChannelPostBundle)
+        СТРОГО для активных подключенных соцсетей клиента:
+        1. Опрашивает реестр подключенных соцсетей (БД / profile).
+        2. Извлекает FactSheet и SKU Card из Clean RAG ровно 1 раз.
+        3. Параллельно (asyncio.gather) запускает генерацию адаптированных текстов под каждую активную сеть.
+        4. Упаковывает черновики в единый PostBundle с общим рендер-ассетом.
+        """
+        profile = profile or {}
+        
+        # 1. Автоматическое определение списка реально активных каналов
+        active_channels = target_channels or get_active_connected_channels(
+            database=database,
+            user_id=user_id,
+            project_id=project_id,
+            profile_data=profile
+        )
+        if not active_channels:
+            active_channels = ["telegram"]
+
+        logger.info(f"🌐 [ContentGenerationEngine] Мультиплатформенная генерация для project_id='{project_id}', активные каналы={active_channels}")
+
+        # 2. Единый 1-кратный ресёрч фактов и SKU
+        about = profile.get("about", {})
+        company_name = about.get("name") or profile.get("company_name") or project_id
+        niche = about.get("niche") or profile.get("niche") or "Бизнес и услуги"
+        positioning = about.get("positioning") or profile.get("positioning") or f"Качественные решения от {company_name}"
+
+        # Дедупликация
+        actual_topic = topic
+        if recent_posts:
+            verdict = self.audit_agent.evaluate_uniqueness(
+                proposed_topic_or_text=topic,
+                recent_channel_posts=recent_posts,
+                topic_category=niche
+            )
+            if verdict.is_duplicate:
+                actual_topic = verdict.suggested_shifted_angle or topic
+
+        # SKU и RAG (1 раз)
+        resolved_chips = GeoEntityResolver.resolve_disambiguation_chips(actual_topic)
+        selected_sku: Optional[SKUCard] = None
+        if sku_id and resolved_chips:
+            for chip in resolved_chips:
+                if chip.sku_id == sku_id:
+                    selected_sku = chip
+                    break
+
+        if selected_sku:
+            fact_sheet = FactSheet(
+                product_name=selected_sku.full_title,
+                category=selected_sku.line_name,
+                key_specs=selected_sku.key_specs,
+                target_audience=selected_sku.hair_type,
+                unverified_claims=selected_sku.unverified_claims,
+                sources=["PIM Retail Database (magnitcosmetic.ru / goldapple.ru)"],
+                color_marker=selected_sku.color_marker,
+                is_verified=True
+            )
+            rag_facts = selected_sku.key_specs
+            actual_topic = selected_sku.full_title
+        else:
+            rag_facts, fact_sheet = await CleanRAGRetrieverSkill.retrieve_with_grounding_fallback(
+                project_id=project_id,
+                query=actual_topic,
+                niche=niche,
+                top_k=3
+            )
+
+        # 3. Параллельная генерация адаптированных черновиков только для активных каналов
+        tasks = []
+        for ch in active_channels:
+            tasks.append(
+                self.generate_post(
+                    project_id=project_id,
+                    topic=actual_topic,
+                    profile=profile,
+                    recent_posts=None,
+                    aspect_ratio=aspect_ratio,
+                    target_channel=ch,
+                    sku_id=sku_id,
+                    fact_sheet=fact_sheet,
+                    rag_facts=rag_facts
+                )
+            )
+
+        draft_results: List[PostDraft] = await asyncio.gather(*tasks)
+        variants = {d.target_channel: d for d in draft_results}
+
+        # Общие спецификации изображений берем из первого сгенерированного черновика
+        shared_image_specs = draft_results[0].image_specs if draft_results else []
+
+        bundle = MultiChannelPostBundle(
+            brand_id=project_id,
+            topic=actual_topic,
+            active_channels=active_channels,
+            variants=variants,
+            selected_sku=selected_sku.model_dump() if selected_sku else None,
+            disambiguation_chips=[c.model_dump() for c in resolved_chips],
+            image_specs=shared_image_specs
+        )
+
+        return bundle

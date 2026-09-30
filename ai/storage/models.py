@@ -24,7 +24,13 @@ except (ImportError, Exception):
     def relationship(*args, **kwargs):
         return None
 
-from storage.db import Base
+try:
+    from storage.db import Base
+except ImportError:
+    try:
+        from ai.storage.db import Base
+    except ImportError:
+        from .db import Base
 
 
 class UserProfile(Base):
