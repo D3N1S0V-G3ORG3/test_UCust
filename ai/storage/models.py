@@ -206,8 +206,8 @@ class FactMetadata(Base):
 
 class FactEmbedding(Base):
     """
-    ORM model for 1536-dim halfvec (FP16) embeddings with denormalized project_id.
-    Denormalized project_id enables native HNSW Pre-Filtering during graph traversal.
+    ORM model for 1536-dim halfvec (FP16) embeddings with denormalized project_id and valid_until.
+    Denormalization enables pure Index-Only HNSW Pre-Filtering during graph traversal.
     """
     __tablename__ = "fact_embeddings"
 
@@ -217,6 +217,7 @@ class FactEmbedding(Base):
         primary_key=True
     )
     project_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    valid_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
     # 1536-dim halfvec for 50% RAM reduction
     embedding: Mapped[Any] = mapped_column(Text, nullable=False)
 

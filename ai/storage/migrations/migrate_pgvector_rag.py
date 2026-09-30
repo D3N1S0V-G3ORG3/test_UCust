@@ -42,17 +42,21 @@ ON fact_metadata (project_id, sku_id);
 CREATE INDEX IF NOT EXISTS idx_fact_metadata_valid_until 
 ON fact_metadata (valid_until);
 
--- 3. Таблица эмбеддингов (1536-dim, halfvec FP16) с денормализацией project_id
--- Денормализация project_id критична для Pre-Filtering внутри HNSW графа без Post-Filtering деградации
+-- 3. Таблица эмбеддингов (1536-dim, halfvec FP16) с денормализацией project_id и valid_until
+-- Денормализация критична для чистейшего Pre-Filtering внутри HNSW графа без Post-Filtering деградации
 CREATE TABLE IF NOT EXISTS fact_embeddings (
     fact_id INT PRIMARY KEY REFERENCES fact_metadata(id) ON DELETE CASCADE,
     project_id VARCHAR(128) NOT NULL,
+    valid_until TIMESTAMP,
     embedding halfvec(1536) NOT NULL
 );
 
 -- Индекс по арендатору для мгновенного отсечения пространства поиска
 CREATE INDEX IF NOT EXISTS idx_fact_embeddings_project 
 ON fact_embeddings (project_id);
+
+CREATE INDEX IF NOT EXISTS idx_fact_embeddings_valid_until 
+ON fact_embeddings (valid_until);
 
 -- 4. Высокоточный HNSW индекс для Negative Inner Product (<#>)
 -- m=32, ef_construction=128 обеспечивают стабильный Recall >= 99% на 1536-мерных пространствах

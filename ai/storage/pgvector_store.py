@@ -81,21 +81,23 @@ class PGVectorStore:
                 )
                 fact_id = res.scalar_one()
 
-                # 2. Атомарный UPSERT вектора с денормализованным project_id
-                # Передаем вектор напрямую для эффективного бинарного протокола драйвера
+                # 2. Атомарный UPSERT вектора с денормализацией ВСЕХ фильтруемых полей
+                # Передаем вектор напрямую: asyncpg передает binary float8[], PostgreSQL кастует в halfvec
                 upsert_emb_stmt = text("""
-                    INSERT INTO fact_embeddings (fact_id, project_id, embedding)
-                    VALUES (:fact_id, :project_id, :emb)
+                    INSERT INTO fact_embeddings (fact_id, project_id, valid_until, embedding)
+                    VALUES (:fact_id, :project_id, :valid_until, :emb::halfvec)
                     ON CONFLICT (fact_id) 
                     DO UPDATE SET 
                         embedding = EXCLUDED.embedding,
-                        project_id = EXCLUDED.project_id
+                        project_id = EXCLUDED.project_id,
+                        valid_until = EXCLUDED.valid_until
                 """)
                 await self.db.execute(
                     upsert_emb_stmt,
                     {
                         "fact_id": fact_id,
                         "project_id": project_id,
+                        "valid_until": valid_until,
                         "emb": embedding
                     }
                 )
@@ -137,7 +139,7 @@ class PGVectorStore:
         limit: int = 5
     ) -> List[Dict[str, Any]]:
         """
-        Поиск релевантных фактов с HNSW Pre-Filtering по fe.project_id = :project_id.
+        Поиск релевантных фактов с HNSW Pre-Filtering по fe.project_id и fe.valid_until.
         Порог косинусного сходства 0.82 транслируется в (embedding <#> query) < -0.82.
         """
         neg_ip_threshold = -float(similarity_threshold)
@@ -151,14 +153,14 @@ class PGVectorStore:
                         fm.sku_id,
                         fm.fact_type,
                         fm.version,
-                        (fe.embedding <#> :emb) * -1.0 as similarity_score
+                        (fe.embedding <#> :emb::halfvec) * -1.0 as similarity_score
                     FROM fact_embeddings fe
                     JOIN fact_metadata fm ON fe.fact_id = fm.id
-                    -- Pre-filtering выполняется ДО JOIN на той же таблице, где лежит HNSW индекс
+                    -- Истинный Pre-filtering: ВСЕ предикаты лежат в таблице индекса
                     WHERE fe.project_id = :project_id
-                      AND (fm.valid_until IS NULL OR fm.valid_until > CURRENT_TIMESTAMP)
-                      AND (fe.embedding <#> :emb) < :neg_ip_threshold
-                    ORDER BY fe.embedding <#> :emb ASC
+                      AND (fe.valid_until IS NULL OR fe.valid_until > CURRENT_TIMESTAMP)
+                      AND (fe.embedding <#> :emb::halfvec) < :neg_ip_threshold
+                    ORDER BY fe.embedding <#> :emb::halfvec ASC
                     LIMIT :limit
                 """)
                 res = await self.db.execute(
