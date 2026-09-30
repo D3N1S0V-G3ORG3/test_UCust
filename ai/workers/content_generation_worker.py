@@ -10,6 +10,7 @@ import logging
 from typing import Any, Dict, Optional
 
 from ai.infrastructure.rabbitmq_topology import (
+    EXCHANGE_NAME,
     QUEUE_CONTENT_COMPLETED,
     QUEUE_CONTENT_DELAY_5S,
     QUEUE_CONTENT_DLQ,
