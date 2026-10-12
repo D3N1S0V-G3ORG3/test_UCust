@@ -167,38 +167,31 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# 6. Подсистема 2: Octopoda Multi-Agent Core & Dashboard
+# ------------------------------------------------------------------------------
+# 6. Подсистема 2: Пассивный мониторинг и дашборд
 # ------------------------------------------------------------------------------
 echo "--------------------------------------------------------------------"
-echo "🐙 [2/4] Запуск Octopoda Multi-Agent Runtime & Dashboard..."
+echo "🐙 [2/4] Проверка пассивного мониторинга (Read-Only Mode)..."
 
 OCTOPODA_LOG="$AI_DIR/octopoda.log"
 
-if $PYTHON_CMD -c "import synrix_runtime" 2>/dev/null; then
-    (
-        cd "$AI_DIR"
-        exec "$PYTHON_CMD" -m synrix_runtime.start > "$OCTOPODA_LOG" 2>&1
-    ) &
-    OCTOPODA_PID=$!
-    CHILD_PIDS+=("$OCTOPODA_PID")
-    echo "   🟢 Octopoda Core запущена в фоне (PID: $OCTOPODA_PID, Log: $OCTOPODA_LOG)"
-elif [ -f "$AI_DIR/integration/octopoda_dashboard.py" ]; then
+if [ -f "$AI_DIR/integration/octopoda_dashboard.py" ]; then
     (
         cd "$AI_DIR"
         exec "$PYTHON_CMD" -m uvicorn integration.octopoda_dashboard:app --host 0.0.0.0 --port 7842 > "$OCTOPODA_LOG" 2>&1
     ) &
     OCTOPODA_PID=$!
     CHILD_PIDS+=("$OCTOPODA_PID")
-    echo "   🟢 Octopoda Dashboard запущен в фоне (PID: $OCTOPODA_PID, Port: 7842)"
+    echo "   🟢 Read-Only Dashboard запущен в фоне (PID: $OCTOPODA_PID, Port: 7842)"
 else
-    echo "   ℹ️ Octopoda автономно работает через встроенный SQLite memory store: $AI_DIR/octopoda_memory.db"
+    echo "   ℹ️ Пассивный мониторинг доступен через FastAPI /metrics и Flower."
 fi
 
 # ------------------------------------------------------------------------------
-# 7. Подсистема 3: Celery Task Worker (Асинхронные очереди)
+# 7. Подсистема 3: Celery Task Worker (Единый стандарт распределенной очереди)
 # ------------------------------------------------------------------------------
 echo "--------------------------------------------------------------------"
-echo "⚡ [3/4] Проверка Celery и распределенной очереди задач..."
+echo "⚡ [3/4] Запуск Celery Worker (Приоритетные очереди: custom, business, start)..."
 
 if $PYTHON_CMD -c "import celery" 2>/dev/null && [ -f "$AI_DIR/celery_tasks.py" ]; then
     CELERY_LOG="$AI_DIR/celery.log"
@@ -210,7 +203,7 @@ if $PYTHON_CMD -c "import celery" 2>/dev/null && [ -f "$AI_DIR/celery_tasks.py" 
     CHILD_PIDS+=("$CELERY_PID")
     echo "   🟢 Celery Workers запущены в фоне (PID: $CELERY_PID, Log: $CELERY_LOG)"
 else
-    echo "   ℹ️ Фоновая очередь работает через встроенный In-Memory AsyncQueueManager."
+    echo "   ⚠️ Celery не установлен или celery_tasks.py недоступен. Установите 'pip install celery redis'."
 fi
 
 # ------------------------------------------------------------------------------

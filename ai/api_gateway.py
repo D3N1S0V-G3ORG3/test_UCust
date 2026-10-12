@@ -333,7 +333,6 @@ class PollPublishAPIRequest(BaseModel):
 # -------------------------------------------------------------------
 
 from contextlib import asynccontextmanager
-from core.queue_manager import AsyncGenerationQueueManager
 from core.vram_scheduler import AutoCalibratingVRAMScheduler
 
 vram_scheduler = AutoCalibratingVRAMScheduler()
@@ -345,13 +344,9 @@ async def lifespan(app: FastAPI):
         await init_db()
     except Exception as db_init_err:
         pass
-    # 2. Старт фонового GPU-воркера очереди при запуске приложения
-    await queue_manager.start_worker()
-    # 3. Фоновый прогрев GPU-моделей (Warmup Routine) для исключения холодных OOM
+    # 2. Фоновый прогрев GPU-моделей (Warmup Routine) для исключения холодных OOM
     asyncio.create_task(vram_scheduler.warmup_gpu_pipelines(orchestrator))
     yield
-    # Остановка воркера при выключении
-    await queue_manager.stop_worker()
 
 from core.observability import init_sentry, ObservabilityManager
 from fastapi import Request, Response
@@ -431,10 +426,10 @@ except Exception as e:
 
 orchestrator = UnifiedOrchestrator(db_session=db_session)
 rag_pipeline = CleanRAGPipeline(min_confidence_threshold=0.65)
-queue_manager = AsyncGenerationQueueManager(orchestrator=orchestrator)
 content_strategy_engine = ContentStrategyEngine(dev_mode=True)
 lazy_controller = LazyRenderingController(dev_simulation_mode=True)
 
+from celery_tasks import enqueue_pipeline_task, get_pipeline_task_status, get_celery_queue_stats
 from api.routers.async_tasks import router as async_tasks_router
 app.include_router(async_tasks_router)
 
@@ -798,13 +793,16 @@ async def submit_async_generation_task(request: AsyncGenerateTaskRequest):
             detail="Security Violation: обнаружен запрещенный запрос или попытка инъекции."
         )
 
-    task_info = await queue_manager.enqueue_task(
+    task_info = enqueue_pipeline_task(
+        task_type="generate_post",
         payload=payload,
         callback_url=request.callback_url,
-        task_id=request.task_id,
         user_id=request.user_id or "default_user",
-        session_id=request.session_id
+        session_id=request.session_id,
+        tier=payload.get("tier", "business"),
     )
+    if request.task_id:
+        task_info["task_id"] = request.task_id
     return task_info
 
 
@@ -812,13 +810,13 @@ async def submit_async_generation_task(request: AsyncGenerateTaskRequest):
 async def get_async_task_status(task_id: str):
     """
     Получение текущего статуса задачи (QUEUED, PROCESSING, COMPLETED, FAILED, PUSHED)
-    и позиции в очереди.
+    из распределенной очереди Celery.
     """
-    task_status = queue_manager.get_task_status(task_id)
+    task_status = get_pipeline_task_status(task_id)
     if not task_status:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Задача '{task_id}' не найдена в реестре очереди."
+            detail=f"Задача '{task_id}' не найдена в реестре Celery."
         )
     return {
         "status": "success",
@@ -829,9 +827,9 @@ async def get_async_task_status(task_id: str):
 @app.get("/api/v1/ai/queue/stats", tags=["Async Generation Queue"])
 async def get_generation_queue_stats():
     """
-    Мониторинг состояния очереди и загруженности GPU.
+    Мониторинг состояния распределенной очереди Celery (Redis) и приоритетов тарифов.
     """
-    return queue_manager.get_queue_stats()
+    return get_celery_queue_stats()
 
 
 @app.post("/api/v1/ai/task", response_model=TaskResponse, tags=["AI Tasks"])

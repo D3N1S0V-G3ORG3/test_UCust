@@ -19,6 +19,7 @@ from __future__ import annotations
 import os
 import asyncio
 import logging
+from datetime import datetime
 from typing import Dict, Any, List, Optional
 
 try:
@@ -361,3 +362,134 @@ def render_post_task(
                 error=str(exc)
             )
         raise exc
+
+
+@celery_app.task(name="celery_tasks.execute_pipeline_task", bind=True)
+def execute_pipeline_task(
+    self,
+    task_type: str,
+    payload: Dict[str, Any],
+    user_id: str = "default_user",
+    session_id: Optional[str] = None,
+    callback_url: Optional[str] = None,
+    tier: str = "business",
+) -> Dict[str, Any]:
+    """
+    Универсальная фоновая задача конвейера Celery:
+    Выполняет задачу через UnifiedOrchestrator с отправкой Webhook.
+    """
+    from core.orchestrator import UnifiedOrchestrator
+    from services.webhook_manager import WebhookCallbackManager
+
+    logger.info(f"⚡ [Celery] Старт задачи {task_type} (ID: {self.request.id}, Tier: {tier})")
+    orchestrator = UnifiedOrchestrator()
+    task_session = session_id or f"celery_{self.request.id}"
+
+    try:
+        result = _run_async(orchestrator.execute_task(
+            task_type=task_type,
+            user_data=payload,
+            session_id=task_session,
+        ))
+
+        res = {
+            "status": "success",
+            "task_id": self.request.id,
+            "task_type": task_type,
+            "session_id": task_session,
+            "result": result,
+        }
+
+        if callback_url:
+            WebhookCallbackManager.send_callback_sync(
+                callback_url=callback_url,
+                event_type=f"{task_type}_completed",
+                tenant_id=user_id,
+                task_id=self.request.id,
+                status="success",
+                data=res,
+            )
+        return res
+    except Exception as exc:
+        logger.error(f"❌ [Celery] Сбой выполнения {task_type} ({self.request.id}): {exc}")
+        if callback_url:
+            WebhookCallbackManager.send_callback_sync(
+                callback_url=callback_url,
+                event_type=f"{task_type}_failed",
+                tenant_id=user_id,
+                task_id=self.request.id,
+                status="failed",
+                error=str(exc),
+            )
+        raise exc
+
+
+def enqueue_pipeline_task(
+    task_type: str,
+    payload: Dict[str, Any],
+    user_id: str = "default_user",
+    session_id: Optional[str] = None,
+    callback_url: Optional[str] = None,
+    tier: str = "business",
+) -> Dict[str, Any]:
+    """Постановка задачи в целевую очередь Celery на основе тарифа."""
+    target_queue = get_queue_for_tier(tier)
+    if HAS_CELERY and hasattr(execute_pipeline_task, "apply_async"):
+        async_result = execute_pipeline_task.apply_async(
+            kwargs={
+                "task_type": task_type,
+                "payload": payload,
+                "user_id": user_id,
+                "session_id": session_id,
+                "callback_url": callback_url,
+                "tier": tier,
+            },
+            queue=target_queue,
+        )
+        task_id = async_result.id
+    else:
+        import uuid
+        task_id = f"mock_{uuid.uuid4().hex[:12]}"
+
+    return {
+        "status": "QUEUED",
+        "task_id": task_id,
+        "queue": target_queue,
+        "user_id": user_id,
+        "session_id": session_id,
+        "timestamp": datetime.utcnow().isoformat(),
+    }
+
+
+def get_pipeline_task_status(task_id: str) -> Dict[str, Any]:
+    """Проверка статуса задачи в Celery / Redis."""
+    if HAS_CELERY and hasattr(celery_app, "AsyncResult"):
+        res = celery_app.AsyncResult(task_id)
+        task_state = res.status
+        is_ready = res.ready()
+        task_result = res.result if is_ready and not res.failed() else None
+        error_msg = str(res.result) if res.failed() else None
+        return {
+            "task_id": task_id,
+            "status": task_state,
+            "ready": is_ready,
+            "data": task_result,
+            "error": error_msg,
+        }
+    return {
+        "task_id": task_id,
+        "status": "COMPLETED",
+        "ready": True,
+        "data": {"mock": True},
+    }
+
+
+def get_celery_queue_stats() -> Dict[str, Any]:
+    """Статистика очередей Celery."""
+    return {
+        "broker": "Redis (Celery)",
+        "active_queues": [QUEUE_CUSTOM, QUEUE_BUSINESS, QUEUE_START],
+        "default_queue": QUEUE_BUSINESS,
+        "tier_mapping": TIER_QUEUES,
+    }
+

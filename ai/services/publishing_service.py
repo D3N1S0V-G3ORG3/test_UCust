@@ -85,13 +85,22 @@ class PublishingService:
         company_name: str = "UCust",
         session_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Отправка стандартного поста через AchievementBroadcaster."""
+        """Отправка стандартного поста через AchievementBroadcaster с платформенным форматированием."""
+        from services.channel_formatters import ChannelFormattersFactory, TargetChannelEnum
         from publishers.achievement_broadcaster import AchievementBroadcaster
+
+        # Платформенное форматирование через ChannelFormattersFactory
+        formatted = ChannelFormattersFactory.format(
+            text=text,
+            target_channel=channel,
+            has_media=bool(image_url),
+        )
+        final_text = formatted.post_text or text
 
         broadcaster = AchievementBroadcaster(target_channel=channel)
         try:
             broadcast_res = await broadcaster.publish_post_async(
-                post_text=text,
+                post_text=final_text,
                 media_path=image_url,
                 target_channel=channel,
             )
@@ -101,6 +110,7 @@ class PublishingService:
                 "status": "mock_success",
                 "channel": channel,
                 "message": f"Fallback publish: {exc}",
+                "formatted_post": formatted.dict(),
                 "timestamp": datetime.utcnow().isoformat(),
             }
 
