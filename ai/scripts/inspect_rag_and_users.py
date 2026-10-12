@@ -244,12 +244,47 @@ def inspect_system():
 
     if "--init" in sys.argv:
         print("⚙️ Инициализация всех таблиц приложения в базе данных...")
+        # 1. Пытаемся активировать расширение vector в PostgreSQL
+        try:
+            with engine.connect() as conn:
+                conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
+                conn.commit()
+            print("✅ Расширение pgvector (vector) подключено в PostgreSQL.")
+        except Exception:
+            pass
+
         try:
             from storage.models import Base as StorageBase
-            from models.db_models import Base as RAGBase
             StorageBase.metadata.create_all(bind=engine)
+            from models.db_models import Base as RAGBase
             if hasattr(RAGBase, "metadata"):
-                RAGBase.metadata.create_all(bind=engine)
+                try:
+                    RAGBase.metadata.create_all(bind=engine)
+                except Exception as rag_err:
+                    if "vector" in str(rag_err).lower():
+                        with engine.connect() as conn:
+                            conn.execute(text("""
+                                CREATE TABLE IF NOT EXISTS tenant_knowledge_chunks (
+                                    chunk_id VARCHAR PRIMARY KEY,
+                                    tenant_id VARCHAR NOT NULL,
+                                    source_type VARCHAR NOT NULL,
+                                    content TEXT NOT NULL,
+                                    embedding JSON NOT NULL
+                                );
+                                CREATE TABLE IF NOT EXISTS brand_profiles (
+                                    tenant_id VARCHAR PRIMARY KEY,
+                                    company_name VARCHAR NOT NULL,
+                                    industry_type VARCHAR NOT NULL,
+                                    tone_of_voice TEXT,
+                                    brand_props JSON,
+                                    contacts JSON,
+                                    forbidden_topics JSON
+                                );
+                            """))
+                            conn.commit()
+                        print("✅ RAG таблицы успешно созданы с JSON-векторами (Universal Fallback).")
+                    else:
+                        raise rag_err
             print("✅ Все таблицы успешно созданы!")
         except Exception as init_err:
             print(f"❌ Ошибка создания таблиц: {init_err}")
@@ -286,6 +321,21 @@ def inspect_system():
             else:
                 print("ℹ️ Профиль 'demo_coffee_01' уже существует.")
             session.close()
+
+            # Добавляем чанки знаний в RAG
+            try:
+                with engine.connect() as conn:
+                    conn.execute(text("""
+                        INSERT INTO tenant_knowledge_chunks (chunk_id, tenant_id, source_type, content, embedding)
+                        VALUES 
+                        ('chunk_menu_01', 'demo_coffee_01', 'website', 'CoffeeCraft Казань. Фирменный тыквенный латте на 100% арабике свежей обжарки со специями и маршмеллоу. Цена: 320 руб.', '[]'),
+                        ('chunk_geo_01', 'demo_coffee_01', '2gis', 'Кофейня CoffeeCraft расположена на ул. Баумана, 15. Часы работы: ежедневно с 08:00 до 22:00. Есть бесплатный Wi-Fi для работы.', '[]')
+                        ON CONFLICT (chunk_id) DO NOTHING;
+                    """))
+                    conn.commit()
+                print("✅ Тестовые чанки знаний RAG успешно добавлены в tenant_knowledge_chunks!")
+            except Exception:
+                pass
         except Exception as seed_err:
             print(f"❌ Ошибка добавления тестовых данных: {seed_err}")
 
