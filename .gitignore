@@ -20,4 +20,6 @@ ai/output/
 ai/ai/
 *.pdf
 *scratch*
+.env
+.env.*
 

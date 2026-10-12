@@ -1,10 +1,12 @@
 import os
 import sys
+import re
 import uuid
 import json
 import time
 import hashlib
 import asyncio
+import threading
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from storage.models import UserProfile, OrchestratorTrace, PublicationHistory, ProjectMetadata, ContentTask
@@ -146,20 +148,23 @@ class UnifiedOrchestrator:
         self.redis_cache = redis_cache or RedisCacheManager()
         self.rag = CleanRAGPipeline(min_confidence_threshold=0.55)
 
-        # 1. Автоматический контроль хранения файлов (Кэш: 5 часов, Генерации: 30 дней)
-        try:
-            from storage.media_retention import MediaRetentionManager
-            cleaner = MediaRetentionManager()
-            retention_days = int(os.getenv("MEDIA_RETENTION_DAYS", "30"))
-            temp_hours = float(os.getenv("TEMP_CACHE_RETENTION_HOURS", "5.0"))
-            auto_archive = os.getenv("MEDIA_AUTO_ARCHIVE", "true").lower() == "true"
-            cleaner.cleanup_expired_files(
-                retention_days=retention_days,
-                temp_cache_retention_hours=temp_hours,
-                archive_generations=auto_archive
-            )
-        except Exception:
-            pass
+        # 1. Автоматический контроль хранения файлов (Кэш: 5 часов, Генерации: 30 дней) в фоновом потоке
+        def _run_media_retention_cleanup():
+            try:
+                from storage.media_retention import MediaRetentionManager
+                cleaner = MediaRetentionManager()
+                retention_days = int(os.getenv("MEDIA_RETENTION_DAYS", "30"))
+                temp_hours = float(os.getenv("TEMP_CACHE_RETENTION_HOURS", "5.0"))
+                auto_archive = os.getenv("MEDIA_AUTO_ARCHIVE", "true").lower() == "true"
+                cleaner.cleanup_expired_files(
+                    retention_days=retention_days,
+                    temp_cache_retention_hours=temp_hours,
+                    archive_generations=auto_archive
+                )
+            except Exception:
+                pass
+
+        threading.Thread(target=_run_media_retention_cleanup, daemon=True, name="MediaRetentionWorker").start()
 
         # 2. Инициализация внутреннего календаря и временного якоря
         try:
@@ -178,23 +183,37 @@ class UnifiedOrchestrator:
 
     def _log_trace(self, session_id: str, agent_name: str, action: str, payload: Any):
         payload_hash = self._hash_payload(payload)
-        
-        if self.db:
+
+        def _persist_trace_sync():
+            if self.db:
+                try:
+                    trace = OrchestratorTrace(
+                        session_id=session_id,
+                        agent_name=agent_name,
+                        action=action,
+                        payload_hash=payload_hash,
+                        payload=payload if isinstance(payload, dict) else {"data": payload}
+                    )
+                    self.db.add(trace)
+                    self.db.commit()
+                except Exception as e:
+                    try:
+                        self.db.rollback()
+                    except Exception:
+                        pass
+                    print(f"[UnifiedOrchestrator] ⚠️ Ошибка сохранения трейса в БД: {e}")
+
             try:
-                trace = OrchestratorTrace(
-                    session_id=session_id,
-                    agent_name=agent_name,
-                    action=action,
-                    payload_hash=payload_hash,
-                    payload=payload if isinstance(payload, dict) else {"data": payload}
-                )
-                self.db.add(trace)
-                self.db.commit()
-            except Exception as e:
-                print(f"[UnifiedOrchestrator] ⚠️ Ошибка сохранения трейса в БД: {e}")
-        
-        # 2. Кешируем стейт в Redis для ускорения будущих запусков
-        self.redis_cache.set_cached_result(action, payload_hash, payload)
+                # 2. Кешируем стейт в Redis для ускорения будущих запусков
+                self.redis_cache.set_cached_result(action, payload_hash, payload)
+            except Exception as r_err:
+                print(f"[UnifiedOrchestrator] ⚠️ Ошибка сохранения трейса в Redis: {r_err}")
+
+        try:
+            loop = asyncio.get_running_loop()
+            loop.run_in_executor(None, _persist_trace_sync)
+        except RuntimeError:
+            _persist_trace_sync()
 
     async def execute_task(self, task_type: str, user_data: dict, session_id: Optional[str] = None) -> dict:
         """
@@ -224,7 +243,8 @@ class UnifiedOrchestrator:
                 moondream = MoondreamVQASkill()
                 company_name_for_md = user_data.get("company_name") or user_data.get("name") or "UCust"
                 prompt_for_md = user_data.get("prompt") or user_data.get("topic") or ""
-                moondream_analysis = moondream.analyze_attachments_batch(
+                moondream_analysis = await asyncio.to_thread(
+                    moondream.analyze_attachments_batch,
                     attachments=attachments,
                     topic=prompt_for_md,
                     company_name=company_name_for_md
@@ -268,7 +288,7 @@ class UnifiedOrchestrator:
             doc_paths = user_data.get("documents") or user_data.get("files") or user_data.get("document_paths") or []
             if isinstance(doc_paths, str):
                 doc_paths = [doc_paths]
-            extracted_docs = doc_collector.extract_documents_batch(doc_paths)
+            extracted_docs = await asyncio.to_thread(doc_collector.extract_documents_batch, doc_paths)
             rag_docs = []
             company_name = user_data.get("company_name", "UCust")
             for idx, doc in enumerate(extracted_docs):
@@ -317,7 +337,8 @@ class UnifiedOrchestrator:
                     try:
                         from skills.moondream_vqa import MoondreamVQASkill
                         vqa = MoondreamVQASkill()
-                        media_vqa_result = vqa.analyze_attachments_batch(
+                        media_vqa_result = await asyncio.to_thread(
+                            vqa.analyze_attachments_batch,
                             attachments=collected_photos[:5],
                             topic=f"Анализ ленты Telegram-канала {channel}",
                             company_name=user_data.get("company_name", channel)
@@ -926,7 +947,7 @@ class UnifiedOrchestrator:
             ]
             if valid_doc_paths:
                 try:
-                    client_docs_data = doc_collector.extract_documents_batch(valid_doc_paths)
+                    client_docs_data = await asyncio.to_thread(doc_collector.extract_documents_batch, valid_doc_paths)
                     for d_idx, doc_item in enumerate(client_docs_data):
                         if doc_item.get("status") == "success" and doc_item.get("raw_text"):
                             rag_docs.append(Document(
@@ -991,38 +1012,52 @@ class UnifiedOrchestrator:
             # 10. Сохранение в реляционную БД (SQL)
             profile_id = None
             if self.db:
-                try:
-                    profile = UserProfile(
-                        external_user_id=user_data.get("user_id", "default_user"),
-                        user_id=user_data.get("user_id", "default_user"),
-                        company_name=company_name,
-                        niche=brand_profile.get("field", activity),
-                        city=brand_profile.get("market", {}).get("geography", city),
-                        country=country,
-                        location_details={"country": country, "city": city, "holidays_count": len(holiday_events) if 'holiday_events' in locals() else 0},
-                        target_audience=brand_profile.get("market", {}).get("segment", ""),
-                        step1={"voice_and_tone": brand_profile.get("tone", []), "positioning": brand_profile.get("positioning", ""), "brand_colors": brand_profile.get("brand_colors", [])},
-                        step2=brand_profile.get("market", {}),
-                        step3=brand_profile.get("swot", {}),
-                        step4={"services": brand_profile.get("services", [])},
-                        step5={"goals": brand_profile.get("goals", [])},
-                        visual_grid_dna=visual_grid_dna,
-                        brand_dossier={
-                            "website_dossier": website_data.get("structured_dossier") if website_data else None,
-                            "documents_dossier": doc_collector.synthesize_dossier_from_docs(client_docs_data) if (client_docs_data and 'doc_collector' in locals()) else None,
-                            "strategy": strategy_data,
-                            "pains": pains_list
-                        },
-                        social_links={"link": raw_social_input, "socials": user_data.get("socials", [])}
-                    )
-                    self.db.add(profile)
-                    self.db.commit()
-                    self.db.refresh(profile)
-                    profile_id = profile.id
+                def _save_profile_sync():
+                    try:
+                        docs_dossier = (
+                            doc_collector.synthesize_dossier_from_docs(client_docs_data)
+                            if (client_docs_data and 'doc_collector' in locals())
+                            else None
+                        )
+                        profile = UserProfile(
+                            external_user_id=user_data.get("user_id", "default_user"),
+                            user_id=user_data.get("user_id", "default_user"),
+                            company_name=company_name,
+                            niche=brand_profile.get("field", activity),
+                            city=brand_profile.get("market", {}).get("geography", city),
+                            country=country,
+                            location_details={"country": country, "city": city, "holidays_count": len(holiday_events) if 'holiday_events' in locals() else 0},
+                            target_audience=brand_profile.get("market", {}).get("segment", ""),
+                            step1={"voice_and_tone": brand_profile.get("tone", []), "positioning": brand_profile.get("positioning", ""), "brand_colors": brand_profile.get("brand_colors", [])},
+                            step2=brand_profile.get("market", {}),
+                            step3=brand_profile.get("swot", {}),
+                            step4={"services": brand_profile.get("services", [])},
+                            step5={"goals": brand_profile.get("goals", [])},
+                            visual_grid_dna=visual_grid_dna,
+                            brand_dossier={
+                                "website_dossier": website_data.get("structured_dossier") if website_data else None,
+                                "documents_dossier": docs_dossier,
+                                "strategy": strategy_data,
+                                "pains": pains_list
+                            },
+                            social_links={"link": raw_social_input, "socials": user_data.get("socials", [])}
+                        )
+                        self.db.add(profile)
+                        self.db.commit()
+                        self.db.refresh(profile)
+                        return profile.id
+                    except Exception as e:
+                        try:
+                            self.db.rollback()
+                        except Exception:
+                            pass
+                        print(f"[UnifiedOrchestrator] ⚠️ Ошибка сохранения профиля в SQL БД: {e}")
+                        return None
+
+                profile_id = await asyncio.to_thread(_save_profile_sync)
+                if profile_id:
                     self._log_trace(session_id, "ChiefOrchestrator", "ProfileSaved", {"profile_id": profile_id})
                     print(f"[UnifiedOrchestrator] ✅ Профиль #{profile_id} ('{company_name}', {country}, г. {city}) успешно сохранен в SQL БД!")
-                except Exception as e:
-                    print(f"[UnifiedOrchestrator] ⚠️ Ошибка сохранения профиля в SQL БД: {e}")
             
             return {
                 "status": "success",
@@ -1081,9 +1116,9 @@ class UnifiedOrchestrator:
             company_name = user_data.get("company_name", "Наша Компания")
             niche = user_data.get("niche", "Бизнес")
             
-            extracted = doc_collector.extract_documents_batch(file_paths)
+            extracted = await asyncio.to_thread(doc_collector.extract_documents_batch, file_paths)
             indexed_count = await doc_collector.sync_documents_to_rag(company_name, niche, extracted, self.rag)
-            dossier = doc_collector.synthesize_dossier_from_docs(extracted)
+            dossier = await asyncio.to_thread(doc_collector.synthesize_dossier_from_docs, extracted)
             
             self._log_trace(session_id, "DocumentCollector", "DocumentsParsed", {
                 "files_count": len(file_paths),
@@ -1180,25 +1215,32 @@ class UnifiedOrchestrator:
             
             # Сохранение в SQL (PublicationHistory & UserProfile)
             if self.db and publication_id:
-                try:
-                    pub = self.db.query(PublicationHistory).filter(PublicationHistory.id == publication_id).first()
-                    if pub:
-                        pub.views_count = views
-                        pub.likes_count = likes
-                        pub.dislikes_count = dislikes
-                        pub.comments_count = comments_count
-                        pub.shares_count = shares
-                        pub.engagement_rate = er
-                        pub.net_approval_index = nai
-                        pub.weighted_positivity_rate = wpr
-                        pub.log_positivity_score = score
-                        pub.positivity_grade = grade
-                        pub.comments_analysis = analysis
-                        pub.last_monitored_at = datetime.utcnow()
-                        self.db.commit()
-                        print(f"[UnifiedOrchestrator] 📊 Метрики публикации #{publication_id} сохранены (Score: {score}, NAI: {nai}, WPR: {wpr}%, ER: {er}%).")
-                except Exception as sql_e:
-                    print(f"[UnifiedOrchestrator] ⚠️ Ошибка сохранения метрик в SQL: {sql_e}")
+                def _update_pub_history_sync():
+                    try:
+                        pub = self.db.query(PublicationHistory).filter(PublicationHistory.id == publication_id).first()
+                        if pub:
+                            pub.views_count = views
+                            pub.likes_count = likes
+                            pub.dislikes_count = dislikes
+                            pub.comments_count = comments_count
+                            pub.shares_count = shares
+                            pub.engagement_rate = er
+                            pub.net_approval_index = nai
+                            pub.weighted_positivity_rate = wpr
+                            pub.log_positivity_score = score
+                            pub.positivity_grade = grade
+                            pub.comments_analysis = analysis
+                            pub.last_monitored_at = datetime.utcnow()
+                            self.db.commit()
+                            print(f"[UnifiedOrchestrator] 📊 Метрики публикации #{publication_id} сохранены (Score: {score}, NAI: {nai}, WPR: {wpr}%, ER: {er}%).")
+                    except Exception as sql_e:
+                        try:
+                            self.db.rollback()
+                        except Exception:
+                            pass
+                        print(f"[UnifiedOrchestrator] ⚠️ Ошибка сохранения метрик в SQL: {sql_e}")
+
+                await asyncio.to_thread(_update_pub_history_sync)
             
             company_name = user_data.get("company_name", "UCust")
             niche = user_data.get("niche", "IT Automation")
@@ -1210,19 +1252,26 @@ class UnifiedOrchestrator:
             
             # Обновление стратегии в профиле SQL
             if self.db and (user_data.get("profile_id") or user_data.get("user_id")):
-                try:
-                    prof = None
-                    if user_data.get("profile_id"):
-                        prof = self.db.query(UserProfile).filter(UserProfile.id == user_data["profile_id"]).first()
-                    elif user_data.get("user_id"):
-                        prof = self.db.query(UserProfile).filter(UserProfile.user_id == user_data["user_id"]).first()
-                    if prof:
-                        dossier = dict(prof.brand_dossier or {})
-                        dossier["feedback_insights"] = adaptations
-                        prof.brand_dossier = dossier
-                        self.db.commit()
-                except Exception as prof_e:
-                    print(f"[UnifiedOrchestrator] ⚠️ Ошибка обновления feedback_insights в SQL: {prof_e}")
+                def _update_insights_sync():
+                    try:
+                        prof = None
+                        if user_data.get("profile_id"):
+                            prof = self.db.query(UserProfile).filter(UserProfile.id == user_data["profile_id"]).first()
+                        elif user_data.get("user_id"):
+                            prof = self.db.query(UserProfile).filter(UserProfile.user_id == user_data["user_id"]).first()
+                        if prof:
+                            dossier = dict(prof.brand_dossier or {})
+                            dossier["feedback_insights"] = adaptations
+                            prof.brand_dossier = dossier
+                            self.db.commit()
+                    except Exception as prof_e:
+                        try:
+                            self.db.rollback()
+                        except Exception:
+                            pass
+                        print(f"[UnifiedOrchestrator] ⚠️ Ошибка обновления feedback_insights в SQL: {prof_e}")
+
+                await asyncio.to_thread(_update_insights_sync)
 
             self._log_trace(session_id, "FeedbackLoopEngine", "FeedbackProcessed", {
                 "er": er,
@@ -1255,24 +1304,45 @@ class UnifiedOrchestrator:
             feedback_insights = user_data.get("feedback_insights")
 
             if self.db and (user_data.get("user_id") or user_data.get("profile_id")):
-                try:
-                    profile_record = None
-                    if user_data.get("profile_id"):
-                        profile_record = self.db.query(UserProfile).filter(UserProfile.id == user_data["profile_id"]).first()
-                    elif user_data.get("user_id"):
-                        profile_record = self.db.query(UserProfile).filter(UserProfile.user_id == user_data["user_id"]).first()
-                    
-                    if profile_record:
-                        company_name = profile_record.company_name or company_name
-                        niche = profile_record.niche or niche
-                        city = profile_record.city or city
-                        country = profile_record.country or country
-                        visual_grid_dna = profile_record.visual_grid_dna or visual_grid_dna
-                        if not feedback_insights and profile_record.brand_dossier and isinstance(profile_record.brand_dossier, dict):
-                            feedback_insights = profile_record.brand_dossier.get("feedback_insights")
-                        print(f"[UnifiedOrchestrator] 🗄️ Профиль #{profile_record.id} ('{company_name}', {country}, г. {city}) успешно загружен из SQL БД для контент-плана.")
-                except Exception as db_e:
-                    print(f"[UnifiedOrchestrator] ⚠️ Ошибка загрузки профиля из SQL: {db_e}")
+                def _load_profile_for_plan_sync():
+                    try:
+                        record = None
+                        if user_data.get("profile_id"):
+                            record = self.db.query(UserProfile).filter(UserProfile.id == user_data["profile_id"]).first()
+                        elif user_data.get("user_id"):
+                            record = self.db.query(UserProfile).filter(UserProfile.user_id == user_data["user_id"]).first()
+                        if record:
+                            fb_ins = None
+                            if record.brand_dossier and isinstance(record.brand_dossier, dict):
+                                fb_ins = record.brand_dossier.get("feedback_insights")
+                            return {
+                                "id": record.id,
+                                "company_name": record.company_name,
+                                "niche": record.niche,
+                                "city": record.city,
+                                "country": record.country,
+                                "visual_grid_dna": record.visual_grid_dna,
+                                "feedback_insights": fb_ins,
+                            }
+                        return None
+                    except Exception as db_e:
+                        try:
+                            self.db.rollback()
+                        except Exception:
+                            pass
+                        print(f"[UnifiedOrchestrator] ⚠️ Ошибка загрузки профиля из SQL: {db_e}")
+                        return None
+
+                prof_data = await asyncio.to_thread(_load_profile_for_plan_sync)
+                if prof_data:
+                    company_name = prof_data.get("company_name") or company_name
+                    niche = prof_data.get("niche") or niche
+                    city = prof_data.get("city") or city
+                    country = prof_data.get("country") or country
+                    visual_grid_dna = prof_data.get("visual_grid_dna") or visual_grid_dna
+                    if not feedback_insights and prof_data.get("feedback_insights"):
+                        feedback_insights = prof_data["feedback_insights"]
+                    print(f"[UnifiedOrchestrator] 🗄️ Профиль #{prof_data['id']} ('{company_name}', {country}, г. {city}) успешно загружен из SQL БД для контент-плана.")
 
             # 2. Семантический запрос в RAG по болям и триггерам аудитории
             rag_query_res = await self.rag.query_async(f"боли страхи возражения {company_name} {niche} {city}")
@@ -1433,28 +1503,47 @@ class UnifiedOrchestrator:
 
             # 2. Загрузка точного профиля из SQL (если передан user_id / profile_id)
             if self.db and (user_data.get("user_id") or user_data.get("profile_id")):
-                try:
-                    profile_record = None
-                    if user_data.get("profile_id"):
-                        profile_record = self.db.query(UserProfile).filter(UserProfile.id == user_data["profile_id"]).first()
-                    elif user_data.get("user_id"):
-                        profile_record = self.db.query(UserProfile).filter(UserProfile.user_id == user_data["user_id"]).first()
-                    
-                    if profile_record:
-                        company_name = profile_record.company_name or company_name
-                        niche = profile_record.niche or niche
-                        city = profile_record.city or city
-                        if profile_record.step1 and isinstance(profile_record.step1, dict):
-                            tone = profile_record.step1.get("voice_and_tone", tone) if not user_data.get("tone") else tone
-                            if not user_data.get("brand_colors") and profile_record.step1.get("brand_colors"):
-                                user_data["brand_colors"] = profile_record.step1.get("brand_colors")
-                        if profile_record.visual_grid_dna:
-                            user_data["visual_grid_dna"] = profile_record.visual_grid_dna
-                            if not user_data.get("brand_colors"):
-                                user_data["brand_colors"] = profile_record.visual_grid_dna.get("brand_hex_palette", [])
-                        print(f"[UnifiedOrchestrator] 🗄️ Профиль #{profile_record.id} ('{company_name}') успешно загружен из SQL БД для генерации.")
-                except Exception as sql_e:
-                    print(f"[UnifiedOrchestrator] ⚠️ Ошибка загрузки профиля из SQL: {sql_e}")
+                def _load_profile_for_gen_sync():
+                    try:
+                        record = None
+                        if user_data.get("profile_id"):
+                            record = self.db.query(UserProfile).filter(UserProfile.id == user_data["profile_id"]).first()
+                        elif user_data.get("user_id"):
+                            record = self.db.query(UserProfile).filter(UserProfile.user_id == user_data["user_id"]).first()
+                        if record:
+                            step1_dict = record.step1 if isinstance(record.step1, dict) else {}
+                            return {
+                                "id": record.id,
+                                "company_name": record.company_name,
+                                "niche": record.niche,
+                                "city": record.city,
+                                "tone": step1_dict.get("voice_and_tone"),
+                                "brand_colors": step1_dict.get("brand_colors"),
+                                "visual_grid_dna": record.visual_grid_dna,
+                            }
+                        return None
+                    except Exception as sql_e:
+                        try:
+                            self.db.rollback()
+                        except Exception:
+                            pass
+                        print(f"[UnifiedOrchestrator] ⚠️ Ошибка загрузки профиля из SQL: {sql_e}")
+                        return None
+
+                prof_data = await asyncio.to_thread(_load_profile_for_gen_sync)
+                if prof_data:
+                    company_name = prof_data.get("company_name") or company_name
+                    niche = prof_data.get("niche") or niche
+                    city = prof_data.get("city") or city
+                    if prof_data.get("tone") and not user_data.get("tone"):
+                        tone = prof_data["tone"]
+                    if prof_data.get("brand_colors") and not user_data.get("brand_colors"):
+                        user_data["brand_colors"] = prof_data["brand_colors"]
+                    if prof_data.get("visual_grid_dna"):
+                        user_data["visual_grid_dna"] = prof_data["visual_grid_dna"]
+                        if not user_data.get("brand_colors") and isinstance(prof_data["visual_grid_dna"], dict):
+                            user_data["brand_colors"] = prof_data["visual_grid_dna"].get("brand_hex_palette", [])
+                    print(f"[UnifiedOrchestrator] 🗄️ Профиль #{prof_data['id']} ('{company_name}') успешно загружен из SQL БД для генерации.")
 
             # 2.1 Pre-Flight Context Router (4-Квадрантная классификация, Bridge Mode и блокировка воронки)
             from skills.context_router import ContextRouterSkill

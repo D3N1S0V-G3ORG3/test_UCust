@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import gc
 import os
+import asyncio
 from typing import List, Optional
 
 from collectors.telethon_collector import TelethonCollector
@@ -137,59 +138,31 @@ class Agent_Interviewer(BaseAgent):
             context.add_log("Agent_Interviewer: SQL storage is not configured; persistence skipped.")
             return context
 
-        session = None
+        def _persist_profile() -> Optional[int]:
+            session = None
+            try:
+                session = self.database.get_session()
+                profile = UserProfile(
+                    step1=questionnaire.step1.model_dump(),
+                    step2=questionnaire.step2.model_dump(),
+                    step3=questionnaire.step3.model_dump(),
+                    step4=questionnaire.step4.model_dump(),
+                    step5=questionnaire.step5.model_dump(),
+                )
+                session.add(profile)
+                session.commit()
+                return profile.id
+            finally:
+                if session is not None:
+                    session.close()
+
         try:
-            session = self.database.get_session()
-            profile = UserProfile(
-                step1=questionnaire.step1.model_dump(),
-                step2=questionnaire.step2.model_dump(),
-                step3=questionnaire.step3.model_dump(),
-                step4=questionnaire.step4.model_dump(),
-                step5=questionnaire.step5.model_dump(),
-            )
-            session.add(profile)
-            session.commit()
-            context.user_profile_id = profile.id
-            context.add_log(f"Agent_Interviewer: questionnaire persisted in SQL (id={profile.id}).")
+            profile_id = await asyncio.to_thread(_persist_profile)
+            context.user_profile_id = profile_id
+            context.add_log(f"Agent_Interviewer: questionnaire persisted in SQL (id={profile_id}).")
         except Exception as db_exc:
             context.add_log(f"Agent_Interviewer: SQL storage unavailable ({db_exc}); persistence skipped.")
             context.user_profile_id = 1
-        finally:
-            if session is not None:
-                session.close()
-
-        return context
-        context.validate("IDLE")
-        questionnaire = context.questionnaire
-        if questionnaire is None:
-            raise ValueError("Questionnaire is required.")
-
-        context.add_log("Agent_Interviewer: questionnaire validated.")
-
-        if self.database is None:
-            context.add_log("Agent_Interviewer: SQL storage is not configured; persistence skipped.")
-            return context
-
-        session = None
-        try:
-            session = self.database.get_session()
-            profile = UserProfile(
-                step1=questionnaire.step1.model_dump(),
-                step2=questionnaire.step2.model_dump(),
-                step3=questionnaire.step3.model_dump(),
-                step4=questionnaire.step4.model_dump(),
-                step5=questionnaire.step5.model_dump(),
-            )
-            session.add(profile)
-            session.commit()
-            context.user_profile_id = profile.id
-            context.add_log(f"Agent_Interviewer: questionnaire persisted in SQL (id={profile.id}).")
-        except Exception as db_exc:
-            context.add_log(f"Agent_Interviewer: SQL storage unavailable ({db_exc}); persistence skipped.")
-            context.user_profile_id = 1
-        finally:
-            if session is not None:
-                session.close()
 
         return context
 
@@ -223,8 +196,15 @@ class Agent_Analyst(BaseAgent):
     async def run(self, context: AgentContext) -> AgentContext:
         context.validate("DATA_COLLECTED")
 
-        telethon_data = self.telethon_collector.collect(self.telethon_channel)
-        vk_data = self.vk_collector.collect(self.vk_group_id)
+        try:
+            telethon_data, vk_data = await asyncio.gather(
+                asyncio.to_thread(self.telethon_collector.collect, self.telethon_channel),
+                asyncio.to_thread(self.vk_collector.collect, self.vk_group_id),
+            )
+        except Exception as col_err:
+            context.add_log(f"Agent_Analyst: collectors fallback note ({col_err}).")
+            telethon_data = self.telethon_collector.collect(self.telethon_channel)
+            vk_data = self.vk_collector.collect(self.vk_group_id)
         context.collector_data.extend([telethon_data, vk_data])
         context.add_log("Agent_Analyst: parser data collected.")
 
@@ -442,9 +422,11 @@ class Agent_Copywriter(BaseAgent):
         self,
         vector_store: Optional[InMemoryVectorStore] = None,
         framework: CopywritingFramework = CopywritingFramework.PAS,
+        llm_skill: Optional[Any] = None,
     ) -> None:
         self.vector_store = vector_store or InMemoryVectorStore()
         self.framework = framework
+        self.llm_skill = llm_skill
 
     @staticmethod
     def optimize_search_query(niche: str) -> str:
@@ -477,11 +459,10 @@ class Agent_Copywriter(BaseAgent):
         framework = context.framework or self.framework
         system_prompt = self.build_system_prompt(framework)
 
-        draft_text = (
-            f"Brand: {reduced_state['brand_dna_summary']}\n"
-            f"Key Points: {reduced_state['swot_key_points']}\n"
-            f"Strategy: {reduced_state['strategy_summary']}\n\n"
-            f"[System Prompt]\n{system_prompt}"
+        user_prompt = (
+            f"Бренд: {reduced_state['brand_dna_summary']}\n"
+            f"Ключевые преимущества: {reduced_state['swot_key_points']}\n"
+            f"Маркетинговая стратегия: {reduced_state['strategy_summary']}\n"
         )
 
         # Reflection loop: Check for previous FactChecker critiques (removed claims)
@@ -489,10 +470,38 @@ class Agent_Copywriter(BaseAgent):
         if removed_claims:
             critique_instruction = (
                 f"\n\nПРЕДЫДУЩАЯ ОШИБКА: Ты выдумал следующие факты: {removed_claims}. "
-                f"Исключи их полностью. Опирайся строго на SWOT."
+                f"Исключи их полностью. Опирайся строго на проверенные факты."
             )
-            draft_text += critique_instruction
+            user_prompt += critique_instruction
             context.add_log(f"Agent_Copywriter: Reflection critique instruction appended for {removed_claims}.")
+
+        draft_text = ""
+        try:
+            if self.llm_skill is None:
+                from skills.saiga_llm import SaigaLLMSkill
+                self.llm_skill = SaigaLLMSkill()
+
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ]
+            draft_text = await asyncio.to_thread(self.llm_skill.generate_chat, messages=messages)
+        except Exception as llm_err:
+            context.add_log(f"Agent_Copywriter: LLM generation fallback note ({llm_err}).")
+
+        if not draft_text or not draft_text.strip():
+            # Защищенный fallback-шаблон публикации при недоступности внешнего LLM-инференса
+            brand_name = (
+                context.questionnaire.step1.business_name
+                if context.questionnaire and context.questionnaire.step1.business_name
+                else "UCust"
+            )
+            draft_text = (
+                f"🚀 {brand_name}: Новые решения для вашего роста!\n\n"
+                f"{reduced_state['strategy_summary']}\n\n"
+                f"▫️ Ключевые преимущества:\n{reduced_state['swot_key_points']}\n\n"
+                f"👉 Узнайте подробности и подключайтесь уже сегодня!"
+            )
 
         embedding = self.vector_store.embed_text(draft_text)
         metadata = self._build_metadata(context)
@@ -519,7 +528,12 @@ class Agent_Copywriter(BaseAgent):
     async def standby(self, context: AgentContext) -> None:
         """Standby hook for clearing LLM Saiga 3 VRAM and invoking Garbage Collector."""
         context.add_log(f"{self.name}: standby hook executed.")
-        # TODO: Invoke Saiga 3 LLM VRAM offloading / CUDA empty cache (e.g. torch.cuda.empty_cache())
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
         gc.collect()
         context.add_log(f"{self.name}: RAM/VRAM garbage collection completed.")
 
