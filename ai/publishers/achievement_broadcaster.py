@@ -521,6 +521,68 @@ class AchievementBroadcaster:
 
         return None
 
+    async def publish_poll_async(
+        self,
+        question: str,
+        options: List[str],
+        is_quiz: bool = False,
+        correct_option_id: Optional[int] = None,
+        explanation: Optional[str] = None,
+        is_anonymous: bool = False
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Публикует интерактивный опрос (Poll / Quiz) в Telegram через Bot API sendPoll.
+        """
+        bot_token = os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("UCUST_TELEGRAM_BOT_TOKEN")
+        if not bot_token:
+            print("[AchievementBroadcaster] ⚠️ TELEGRAM_BOT_TOKEN не задан, пропуск sendPoll.")
+            return None
+
+        import ssl
+        import json
+        import httpx
+        ssl_ctx = ssl.create_default_context()
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = ssl.CERT_NONE
+
+        # Ограничения Telegram: question до 300 символов, options до 10 вариантов по 100 символов
+        clean_q = question[:300].strip()
+        clean_opts = [str(o)[:100].strip() for o in options[:10] if str(o).strip()]
+        if len(clean_opts) < 2:
+            print("[AchievementBroadcaster] ⚠️ Недостаточно вариантов ответа для sendPoll (<2).")
+            return None
+
+        poll_type = "quiz" if is_quiz else "regular"
+        req_payload: Dict[str, Any] = {
+            "chat_id": self.target_channel,
+            "question": clean_q,
+            "options": json.dumps(clean_opts),
+            "is_anonymous": is_anonymous,
+            "type": poll_type
+        }
+        if is_quiz and correct_option_id is not None:
+            req_payload["correct_option_id"] = correct_option_id
+            if explanation:
+                req_payload["explanation"] = explanation[:200]
+                req_payload["explanation_parse_mode"] = "HTML"
+
+        try:
+            async with httpx.AsyncClient(verify=ssl_ctx, timeout=30.0) as client:
+                resp = await client.post(
+                    f"https://api.telegram.org/bot{bot_token}/sendPoll",
+                    data=req_payload
+                )
+                data = resp.json()
+                if data.get("ok"):
+                    print(f"[AchievementBroadcaster] 📊 Интерактивный опрос/квиз успешно опубликован в {self.target_channel}!")
+                    return {"status": "success", "method": "sendPoll", "channel": self.target_channel}
+                else:
+                    print(f"[AchievementBroadcaster] ⚠️ Ошибка sendPoll: {data.get('description')}")
+                    return data
+        except Exception as e:
+            print(f"[AchievementBroadcaster] ⚠️ Ошибка отправки sendPoll: {e}")
+            return None
+
     async def publish_interactive_puzzle_async(
         self,
         row_albums: List[List[str]],

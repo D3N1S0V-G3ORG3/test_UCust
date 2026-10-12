@@ -170,7 +170,21 @@ async def run_pipeline(
     if clean_rag_facts:
         rag_context = "\n".join([f"• {fact}" for fact in clean_rag_facts[:3]])
     else:
-        rag_context = f"• Аутентичная рецептура и свежие отборные ингредиенты\n• Фирменный контроль качества от «{company_name}»"
+        if any(w in (niche.lower() + " " + company_name.lower()) for w in ["ai", "ии", "smm", "смм", "маркетинг", "saas", "автоном", "софт", "ucust"]):
+            rag_context = (
+                f"• Автономная мультиагентная платформа 24/7 для генерации контента и маркетинга\n"
+                f"• Clean RAG верификация фактов и защита от галлюцинаций в публикациях от «{company_name}»"
+            )
+        elif any(w in niche.lower() for w in ["пекарн", "кулич", "хлеб", "выпечк", "кондитер", "кофе"]):
+            rag_context = (
+                f"• Аутентичная рецептура и свежие отборные ингредиенты\n"
+                f"• Фирменный контроль качества от «{company_name}»"
+            )
+        else:
+            rag_context = (
+                f"• Высокие стандарты качества и системный контроль процессов\n"
+                f"• Проверенные решения с официальной гарантией от «{company_name}»"
+            )
 
     ground_sec = round(time.time() - t_ground_start, 2)
     print(f"  📋 Паспорт фактов сформирован ({ground_sec} сек): {len(clean_rag_facts)} ТТХ верифицировано.")
@@ -199,13 +213,28 @@ async def run_pipeline(
         poll_payload = generated_poll.model_dump()
 
         quiz_badge = "🧠 <b>ВИКТОРИНА ДНЯ</b>" if is_quiz else "📊 <b>ОПРОС ЭКСПЕРТОВ</b>"
+        
+        # Эстетичный список вариантов ответа с эмодзи
+        num_emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣"]
+        options_lines = []
+        for idx, opt in enumerate(generated_poll.options):
+            badge = num_emojis[idx] if idx < len(num_emojis) else "▫️"
+            options_lines.append(f"{badge} {opt}")
+        options_text = "\n".join(options_lines)
+
         post_text = (
             f"{quiz_badge} от «{company_name}»\n\n"
             f"<b>{generated_poll.question}</b>\n\n"
-            f"<blockquote expandable>\n"
-            f"{rag_context}\n"
-            f"</blockquote>\n\n"
+            f"<b>Варианты ответов:</b>\n"
+            f"{options_text}\n\n"
         )
+        # Блок контекста добавляем только если факты релевантны нише (без утечек кросс-ниш)
+        if rag_context and not any(w in rag_context.lower() for w in ["рецептур", "закваск", "кулич", "агрегат", "компьютерная проверка"]):
+            post_text += (
+                f"<blockquote expandable>\n"
+                f"💡 <b>Контекст от команды:</b>\n{rag_context}\n"
+                f"</blockquote>\n\n"
+            )
         if is_quiz and generated_poll.explanation:
             post_text += f"💡 <b>Правильный ответ и объяснение:</b> <tg-spoiler>{generated_poll.explanation}</tg-spoiler>\n\n"
         
@@ -574,6 +603,19 @@ async def run_pipeline(
                 second_msg = f"{part2_text}\n\n---\n{telemetry_block}" if part2_text and show_telemetry else (part2_text or telemetry_block)
                 await broadcaster._publish_via_bot_api(second_msg, None)
                 print(f"📊 Дополнительный блок опубликован.")
+
+            if clean_format in ["poll", "quiz"] and poll_payload:
+                await asyncio.sleep(1.0)
+                poll_send_res = await broadcaster.publish_poll_async(
+                    question=generated_poll.question,
+                    options=generated_poll.options,
+                    is_quiz=is_quiz,
+                    correct_option_id=generated_poll.correct_option_id,
+                    explanation=generated_poll.explanation,
+                    is_anonymous=generated_poll.is_anonymous
+                )
+                if poll_send_res and poll_send_res.get("status") == "success":
+                    print(f"🗳️ Интерактивный Telegram-опрос успешно отправлен в канал.")
         else:
             print(f"ℹ️ Статус вещателя: {pub_res}")
 
