@@ -222,6 +222,35 @@ class PipelineOrchestratorFacade:
         except RuntimeError:
             _persist_trace_sync()
 
+    async def _emit_event(
+        self,
+        session_id: str,
+        event_type: str,
+        stage: str,
+        progress_pct: int,
+        message: str,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Безопасная публикация события этапа конвейера в распределенную шину SSE."""
+        if not session_id:
+            return
+        try:
+            try:
+                from api.streaming import global_event_bus, PipelineEvent
+            except ImportError:
+                from ai.api.streaming import global_event_bus, PipelineEvent
+            event = PipelineEvent(
+                event_type=event_type,
+                session_id=session_id,
+                stage=stage,
+                progress_pct=progress_pct,
+                message=message,
+                payload=payload or {},
+            )
+            await global_event_bus.publish_event(event)
+        except Exception as e:
+            logger.debug(f"[PipelineFacade] Не удалось опубликовать SSE событие: {e}")
+
     async def execute_pipeline(
         self,
         state: PipelineState,
@@ -230,15 +259,100 @@ class PipelineOrchestratorFacade:
     ) -> PipelineState:
         """
         Сквозной конвейер состояний Pipeline State Graph.
-        Включает расчет метрик телеметрии (длительность этапов, токены, расчет стоимости $)
+        Включает расчет метрик телеметрии (длительность этапов, токены, расчет стоимости $),
+        трансляцию этапов в реальном времени через Server-Sent Events (SSE)
         и структурированное JSON-логирование для ELK / Grafana Loki.
         """
         start_time = time.time()
         try:
+            # 1. Этап Brand DNA (извлечение ДНК бренда и контекста)
+            await self._emit_event(
+                state.session_id,
+                "step_started",
+                "brand_dna",
+                10,
+                "Извлечение ДНК бренда, парсинг профиля и анализ артефактов...",
+            )
             state = await self.brand_service.process_brand(state, user_data=user_data)
+            await self._emit_event(
+                state.session_id,
+                "step_completed",
+                "brand_dna",
+                30,
+                "ДНК бренда успешно обработан и зафиксирован",
+                {"brand_dna": state.brand_dna},
+            )
+
+            # 2. Этап RAG & Campaign Service (генерация черновика и визуала)
+            await self._emit_event(
+                state.session_id,
+                "step_started",
+                "content_draft",
+                40,
+                "Синтез структуры контента, RAG-маршрутизация и инференс Saiga LLM...",
+            )
             state = await self.campaign_service.generate_campaign(state, user_data=user_data)
+            await self._emit_event(
+                state.session_id,
+                "step_completed",
+                "content_draft",
+                75,
+                "Черновик контента и визуал успешно сформированы",
+                {
+                    "critic_score": state.critic_score,
+                    "fact_check_passed": state.fact_check_passed,
+                },
+            )
+
+            # 3. Этап OTK контроля качества (Charlie Munger Critic)
+            await self._emit_event(
+                state.session_id,
+                "step_started",
+                "critic_review",
+                80,
+                "Аудит качества контента и проверка фактов (Charlie Munger Critic)...",
+            )
+            await self._emit_event(
+                state.session_id,
+                "step_completed",
+                "critic_review",
+                90,
+                f"OTK аудит качества завершен (оценка: {state.critic_score})",
+            )
+
             if auto_publish:
+                # 4. Этап публикации
+                await self._emit_event(
+                    state.session_id,
+                    "step_started",
+                    "publishing",
+                    92,
+                    "Автоматическая публикация в подключенные каналы...",
+                )
                 state = await self.publishing_service.publish(state, user_data=user_data)
+                await self._emit_event(
+                    state.session_id,
+                    "step_completed",
+                    "publishing",
+                    98,
+                    "Контент успешно опубликован",
+                    {
+                        "is_published": state.is_published,
+                        "published_urls": state.published_urls,
+                    },
+                )
+
+            await self._emit_event(
+                state.session_id,
+                "pipeline_finished",
+                "publishing" if auto_publish else "critic_review",
+                100,
+                "Мультиагентный конвейер успешно завершен",
+                {
+                    "critic_score": state.critic_score,
+                    "draft_length": len(state.draft_text or ""),
+                },
+            )
 
             duration = time.time() - start_time
             state.telemetry["total_pipeline_duration"] = round(duration, 3)
@@ -289,6 +403,14 @@ class PipelineOrchestratorFacade:
 
         except Exception as exc:
             duration = time.time() - start_time
+            await self._emit_event(
+                state.session_id if state else "unknown",
+                "pipeline_error",
+                "error",
+                0,
+                f"Ошибка выполнения конвейера: {exc}",
+                {"error": str(exc)},
+            )
             err_log = {
                 "timestamp": datetime.utcnow().isoformat() + "Z",
                 "logger": "PipelineOrchestratorFacade",

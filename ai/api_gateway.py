@@ -433,6 +433,13 @@ from celery_tasks import enqueue_pipeline_task, get_pipeline_task_status, get_ce
 from api.routers.async_tasks import router as async_tasks_router
 app.include_router(async_tasks_router)
 
+# Маршрутизатор живого стриминга событий пайплайна (Server-Sent Events)
+from api.streaming import router as streaming_router
+app.include_router(streaming_router)
+
+# Rate Limiter & Concurrency Guard
+from api.rate_limiter import RateLimitGuard, ConcurrencyLimiter, global_concurrency_limiter
+
 
 # -------------------------------------------------------------------
 # Prometheus Metrics Scrape Endpoint
@@ -450,8 +457,18 @@ async def get_prometheus_metrics():
 # ЕДИНЫЙ КОМАНДНЫЙ ШЛЮЗ ОРКЕСТРАТОРА (v2.5.0 WIREGUARD HTTP REST)
 # ============================================================================
 
-@app.post("/api/v1/orchestrator/execute", response_model=OrchestratorTaskResponse, tags=["Unified Orchestrator Gateway"])
-@app.post("/api/v1/task/execute", response_model=OrchestratorTaskResponse, tags=["Unified Orchestrator Gateway"])
+@app.post(
+    "/api/v1/orchestrator/execute",
+    response_model=OrchestratorTaskResponse,
+    dependencies=[Depends(RateLimitGuard(rps=10.0, burst=20))],
+    tags=["Unified Orchestrator Gateway"],
+)
+@app.post(
+    "/api/v1/task/execute",
+    response_model=OrchestratorTaskResponse,
+    dependencies=[Depends(RateLimitGuard(rps=10.0, burst=20))],
+    tags=["Unified Orchestrator Gateway"],
+)
 async def execute_orchestrator_task(
     request: OrchestratorTaskRequest,
     x_internal_secret: Optional[str] = Header(None, alias="X-Internal-Secret"),
@@ -624,8 +641,8 @@ async def commit_project_knowledge(
 # 3. REST API Эндпоинты
 # -------------------------------------------------------------------
 
-@app.post("/orchestration/generate", tags=["Direct Generation Bridge"])
-@app.post("/api/v1/orchestration/generate", tags=["Direct Generation Bridge"])
+@app.post("/orchestration/generate", dependencies=[Depends(RateLimitGuard(rps=5.0, burst=10))], tags=["Direct Generation Bridge"])
+@app.post("/api/v1/orchestration/generate", dependencies=[Depends(RateLimitGuard(rps=5.0, burst=10))], tags=["Direct Generation Bridge"])
 async def direct_orchestration_generate(
     request: GeneratePostRequest,
     x_internal_secret: Optional[str] = Header(None, alias="X-Internal-Secret"),

@@ -16,6 +16,7 @@ try:
     )
     from api.dependencies.auth import get_current_tenant
     from celery_tasks import celery_app, get_queue_for_tier, QUEUE_BUSINESS
+    from api.rate_limiter import RateLimitGuard
 except ImportError:
     from ai.models.api_models import (
         OnboardingAsyncRequest,
@@ -24,6 +25,7 @@ except ImportError:
     )
     from ai.api.dependencies.auth import get_current_tenant
     from ai.celery_tasks import celery_app, get_queue_for_tier, QUEUE_BUSINESS
+    from ai.api.rate_limiter import RateLimitGuard
 
 logger = logging.getLogger("AsyncTasksRouter")
 
@@ -34,6 +36,7 @@ router = APIRouter(prefix="/api/v1", tags=["Async Tasks Queue"])
     "/onboarding/async",
     response_model=AsyncTaskAcceptedResponse,
     status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(RateLimitGuard(rps=10.0, burst=20))],
     summary="Асинхронный запуск онбординга бренда"
 )
 async def trigger_onboarding_task(
@@ -76,6 +79,7 @@ async def trigger_onboarding_task(
     "/content/generate-async",
     response_model=AsyncTaskAcceptedResponse,
     status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(RateLimitGuard(rps=10.0, burst=20))],
     summary="Асинхронный запуск генерации контента (Lazy Rendering)"
 )
 async def trigger_content_generation_task(
