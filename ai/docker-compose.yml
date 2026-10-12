@@ -1,6 +1,7 @@
 # ==============================================================================
-# UCust AI Microservice Compose Stack (Development & Staging)
-# Orchestrates FastAPI Gateway, Celery Workers, Redis, and pgvector.
+# UCust AI Microservice Compose Stack (Production & Staging)
+# Orchestrates Nginx Edge Proxy, FastAPI Gateway, Celery Workers, Beat, Redis, and pgvector.
+# Hardened with cgroups deploy.resources.limits to protect Zephyrus S17 / Cloud VRAM/RAM.
 # ==============================================================================
 
 version: '3.8'
@@ -21,6 +22,11 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2048M
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-ucust_ai}"]
       interval: 5s
@@ -30,7 +36,7 @@ services:
       - ucust_internal_net
 
   # ----------------------------------------------------------------------------
-  # 2. Redis Message Broker & Result Backend
+  # 2. Redis Message Broker, Pub/Sub & Token Bucket Backend
   # ----------------------------------------------------------------------------
   redis:
     image: redis:7-alpine
@@ -41,6 +47,11 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1024M
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -50,7 +61,7 @@ services:
       - ucust_internal_net
 
   # ----------------------------------------------------------------------------
-  # 3. FastAPI Service Gateway (REST API, WebSockets & Prometheus Metrics)
+  # 3. FastAPI Service Gateway (REST API, SSE Streaming & Rate Limiter)
   # ----------------------------------------------------------------------------
   fastapi-gateway:
     build:
@@ -77,6 +88,11 @@ services:
       - "8000:8000"
     volumes:
       - output_media:/app/output/photos
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2048M
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/ai/health"]
       interval: 10s
@@ -86,7 +102,7 @@ services:
       - ucust_internal_net
 
   # ----------------------------------------------------------------------------
-  # 4. Celery CPU Worker (Queues: custom, business, start)
+  # 4. Celery CPU Worker (Queues: custom, business, start, trend_mining)
   # Ingests Web, Telegram, Docs, RAG Search, and Saiga LLM text generation
   # ----------------------------------------------------------------------------
   celery-worker-cpu:
@@ -95,7 +111,7 @@ services:
       dockerfile: Dockerfile
     container_name: ucust_celery_worker_cpu
     restart: unless-stopped
-    command: celery -A celery_tasks.celery_app worker --loglevel=info --concurrency=2 -Q custom,business,start
+    command: celery -A celery_tasks.celery_app worker --loglevel=info --concurrency=2 -Q custom,business,start,trend_mining
     depends_on:
       redis:
         condition: service_healthy
@@ -111,6 +127,11 @@ services:
       - DEV_SIMULATION_MODE=${DEV_SIMULATION_MODE:-true}
     volumes:
       - output_media:/app/output/photos
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4096M
     networks:
       - ucust_internal_net
 
@@ -140,11 +161,65 @@ services:
       - DEV_SIMULATION_MODE=${DEV_SIMULATION_MODE:-true}
     volumes:
       - output_media:/app/output/photos
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 6144M
     networks:
       - ucust_internal_net
 
   # ----------------------------------------------------------------------------
-  # 6. Observability: Prometheus (Monitoring Profile)
+  # 6. Celery Beat Scheduler (Periodic Tasks: Trend Mining every 30m / 2h)
+  # ----------------------------------------------------------------------------
+  celery-beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ucust_celery_beat
+    restart: unless-stopped
+    command: celery -A celery_tasks.celery_app beat --loglevel=info
+    depends_on:
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env.example
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - DEV_SIMULATION_MODE=${DEV_SIMULATION_MODE:-true}
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+    networks:
+      - ucust_internal_net
+
+  # ----------------------------------------------------------------------------
+  # 7. Nginx Edge Reverse Proxy (Zero Buffering for SSE & Static Media)
+  # ----------------------------------------------------------------------------
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: ucust_nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - output_media:/opt/ucust/ai/output/photos:ro
+    depends_on:
+      - fastapi-gateway
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+    networks:
+      - ucust_internal_net
+
+  # ----------------------------------------------------------------------------
+  # 8. Observability: Prometheus (Monitoring Profile)
   # ----------------------------------------------------------------------------
   prometheus:
     image: prom/prometheus:latest
@@ -160,7 +235,7 @@ services:
       - ucust_internal_net
 
   # ----------------------------------------------------------------------------
-  # 7. Observability: Grafana (Monitoring Profile)
+  # 9. Observability: Grafana (Monitoring Profile)
   # ----------------------------------------------------------------------------
   grafana:
     image: grafana/grafana:latest
