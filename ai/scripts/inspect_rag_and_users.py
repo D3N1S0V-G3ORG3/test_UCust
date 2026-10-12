@@ -21,6 +21,29 @@ if hasattr(sys.stdout, 'reconfigure'):
 
 import json
 
+# Загружаем переменные из .env
+def load_env_candidates():
+    paths = [
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"),
+        os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".env"),
+        "/opt/ucust/ai/.env",
+        "/opt/ucust/.env",
+        ".env"
+    ]
+    for p in paths:
+        if os.path.isfile(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith("#") and "=" in line:
+                            k, v = line.split("=", 1)
+                            os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+            except Exception:
+                pass
+
+load_env_candidates()
+
 # Добавляем пути импорта
 current_dir = os.path.dirname(os.path.abspath(__file__))
 ai_dir = os.path.dirname(current_dir)
@@ -35,23 +58,65 @@ def print_header(title: str):
     print(f"  {title}")
     print("=" * 70)
 
-def inspect_system():
-    raw_url = os.getenv("DATABASE_URL", DATABASE_URL)
-    sync_url = raw_url.replace("+asyncpg", "").replace("+aiosqlite", "")
+def find_working_engine():
+    # Собираем список кандидатов подключения
+    candidates = []
     
-    print_header("🔌 ПОДКЛЮЧЕНИЕ К БАЗЕ ДАННЫХ")
-    print(f"URL: {sync_url.split('@')[-1] if '@' in sync_url else sync_url}")
+    # 1. Из окружения
+    env_db = os.getenv("DATABASE_URL")
+    if env_db:
+        candidates.append(("DATABASE_URL из .env", env_db.replace("+asyncpg", "").replace("+aiosqlite", "")))
+        
+    # 2. Из POSTGRES_* переменных
+    pg_user = os.getenv("POSTGRES_USER", "postgres")
+    pg_pass = os.getenv("POSTGRES_PASSWORD", "postgres")
+    pg_host = os.getenv("POSTGRES_HOST", "localhost")
+    pg_port = os.getenv("POSTGRES_PORT", "5432")
+    pg_db = os.getenv("POSTGRES_DB", "ai_smm")
+    candidates.append((
+        f"PostgreSQL ({pg_user}@{pg_host}:{pg_port}/{pg_db})",
+        f"postgresql://{pg_user}:{pg_pass}@{pg_host}:{pg_port}/{pg_db}"
+    ))
 
-    engine = None
-    try:
-        engine = create_engine(sync_url, echo=False)
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-        print("✅ Успешное подключение к основной БД.")
-    except Exception as exc:
-        print(f"⚠️ Не удалось подключиться к {sync_url}: {exc}")
-        print("🔄 Проверяем локальный SQLite fallback 'sqlite:///./ai_smm_dev.db'...")
-        engine = create_engine("sqlite:///./ai_smm_dev.db", echo=False)
+    # 3. Дефолтный postgres:postgres
+    candidates.append((
+        "PostgreSQL (postgres:postgres@localhost:5432/ai_smm)",
+        "postgresql://postgres:postgres@localhost:5432/ai_smm"
+    ))
+
+    # 4. Локальные SQLite базы данных
+    sqlite_paths = [
+        os.path.join(ai_dir, "ai_smm_dev.db"),
+        os.path.join(os.path.dirname(ai_dir), "ai_smm_dev.db"),
+        "/opt/ucust/ai/ai_smm_dev.db",
+        "/opt/ucust/ai_smm_dev.db",
+        "./ai_smm_dev.db"
+    ]
+    for sp in sqlite_paths:
+        if os.path.isfile(sp):
+            candidates.append((f"SQLite файл ({sp})", f"sqlite:///{sp}"))
+
+    # Проверяем кандидатов
+    for label, url in candidates:
+        try:
+            eng = create_engine(url, echo=False)
+            with eng.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            print(f"✅ Успешно подключено к: {label}")
+            return eng, label, url
+        except Exception as e:
+            # Не шумим на известные ошибки авторизации или отсутствия сервера
+            err_msg = str(e).split("\n")[0]
+            print(f"❌ Не удалось подключиться к {label}: {err_msg[:80]}")
+
+    # Fallback на дефолтный sqlite
+    fallback = "sqlite:///./ai_smm_dev.db"
+    print(f"🔄 Используем стандартный fallback: {fallback}")
+    return create_engine(fallback, echo=False), "SQLite Default", fallback
+
+def inspect_system():
+    print_header("🔌 ПОДКЛЮЧЕНИЕ К БАЗЕ ДАННЫХ")
+    engine, engine_label, engine_url = find_working_engine()
 
     inspector = inspect(engine)
     existing_tables = inspector.get_table_names()
