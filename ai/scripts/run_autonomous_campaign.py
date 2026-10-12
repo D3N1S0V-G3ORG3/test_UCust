@@ -243,14 +243,14 @@ async def run_pipeline(
         # Стандартный пост / Карусель / Мозаика
         system_msg = TELEGRAM_EXPERT_PROMPT.format(
             tone_of_voice=tone,
-            positioning=f"Премиальное качество и натуральные ингредиенты от {company_name}",
+            positioning=f"Инновации, экспертность и высокое качество от {company_name}",
             content_goal="Вовлечение, экспертность и прямая продажа",
             rag_context=rag_context
         )
         if fact_sheet and fact_sheet.is_grounded:
             system_msg += f"\n\n{fact_sheet.to_prompt_block()}\nСтрогое правило: не выдумывать характеристики вне FactSheet."
 
-        puzzle_hint = "\n<i>Листайте слои карусели, чтобы собрать свой кулич!</i>" if clean_format in ["puzzle", "swipe_puzzle", "cryptex"] else ""
+        puzzle_hint = "\n<i>Листайте слои карусели, чтобы увидеть все детали!</i>" if clean_format in ["puzzle", "swipe_puzzle", "cryptex"] else ""
         
         user_msg = (
             f"Напиши публикацию для Telegram-канала '{company_name}' (ниша: {niche}) строго по Редполитике:\n"
@@ -290,26 +290,45 @@ async def run_pipeline(
             logger.warning(f"Локальный инференс Saiga LLM: {llm_err}")
 
         if not post_text:
-            post_text = (
-                f"<b>«{company_name}» открыла предзаказ на {actual_topic.lower()}</b> — выпекаем на живой закваске, поэтому мякиш остается воздушным и не черствеет больше недели.\n\n"
-                f"▫️ <b>Отборное фермерское масло</b> и вымоченный в роме изюм.\n"
-                f"▫️ <b>Натуральные цукаты</b> и бельгийская глазурь без искусственных добавок.\n\n"
-            )
+            # Универсальный адаптивный синтез под конкретную компанию, нишу и тему
+            post_text = f"<b>«{company_name}»: {actual_topic}</b> — готовое решение для тех, кто ценит качество, результат и время.\n\n"
+            
+            # Если есть факты из RAG — берем их
+            if rag_context and len(rag_context.strip()) > 30:
+                raw_chunks = [c.strip() for c in rag_context.splitlines() if c.strip() and not c.startswith("=")]
+                meaningful_chunks = [c for c in raw_chunks if len(c) > 35][:2]
+                if meaningful_chunks:
+                    for mc in meaningful_chunks:
+                        clean_mc = mc.split(":", 1)[-1].strip() if ":" in mc else mc
+                        post_text += f"▫️ <b>{clean_mc[:45]}...</b> {clean_mc[45:150]}\n"
+                else:
+                    post_text += f"▫️ <b>Экономия до 85% времени:</b> автоматизация задач без потери в качестве.\n"
+                    post_text += f"▫️ <b>Специализация в нише «{niche}»:</b> учитываем специфику аудитории и стандарты каналов.\n\n"
+            else:
+                post_text += f"▫️ <b>Надежность и точность:</b> проверенное решение от команды {company_name}.\n"
+                post_text += f"▫️ <b>Результат с первого дня:</b> закрываем задачи в сфере «{niche}» быстро и без лишних расходов.\n\n"
+
+            if quote_text:
+                post_text += f"\n<blockquote expandable>«{quote_text}»</blockquote>\n"
             if old_price and new_price:
-                post_text += f"🏷️ <b>Цена:</b> <s>{old_price}</s> <b>{new_price}</b>"
+                post_text += f"\n🏷️ <b>Цена:</b> <s>{old_price}</s> <b>{new_price}</b>"
                 if promo_code:
                     post_text += f" по промокоду <code>{promo_code}</code>"
                 post_text += ".\n"
+            elif promo_code:
+                post_text += f"\n🎟️ <b>Промокод на скидку:</b> <code>{promo_code}</code>.\n"
             if secret_spoiler:
-                post_text += f"🎁 <b>Подарок к заказу:</b> <tg-spoiler>{secret_spoiler}</tg-spoiler>.\n"
+                post_text += f"\n🎁 <b>Специальный бонус:</b> <tg-spoiler>{secret_spoiler}</tg-spoiler>.\n"
             
             if clean_format in ["puzzle", "swipe_puzzle", "cryptex"]:
-                post_text += "\n<i>Листайте карусель, чтобы выбрать декор!</i>\n"
+                post_text += "\n<i>Листайте карусель, чтобы изучить подробности!</i>\n"
             
             if cta_url or cta_label:
-                post_text += f"\n👉 <a href=\"{cta_url or 'https://t.me/'}\">{cta_label or 'Забронировать кулич в боте'}</a>\n"
+                post_text += f"\n👉 <a href=\"{cta_url or 'https://t.me/'}\">{cta_label or 'Попробовать прямо сейчас'}</a>\n"
                 
-            post_text += f"\n#{company_name.replace(' ', '')} #{niche.replace(' ', '')} #Пасха2026"
+            clean_comp_tag = re.sub(r'[^a-zA-Zа-яА-Я0-9_]', '', company_name.replace(' ', ''))
+            clean_niche_tag = re.sub(r'[^a-zA-Zа-яА-Я0-9_]', '', niche.replace(' ', ''))
+            post_text += f"\n#{clean_comp_tag} #{clean_niche_tag}"
 
     # -------------------------------------------------------------
     # ЭТАП 2.1: Обогащение и зачистка штампов / фейковых промокодов

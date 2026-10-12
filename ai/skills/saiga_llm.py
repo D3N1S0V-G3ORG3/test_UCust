@@ -503,7 +503,7 @@ class SaigaLLMSkill:
             niche=niche,
             rag_context=sys_content
         )
-        return res_dict.get("text", "")
+        return res_dict.get("post_text") or res_dict.get("text") or ""
 
     async def generate(self, system_prompt: str, user_prompt: str, response_format: str = "text") -> str:
         """Асинхронная обертка над generate_chat."""
