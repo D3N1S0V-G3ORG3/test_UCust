@@ -264,7 +264,35 @@ class CriticMungerSkill:
             else:
                 audit_breakdown['freelance_outcome'] = True
 
-        # 9. FEEDBACK LOOP NEGATIVE CONSTRAINTS (Continuous Learning Gatekeeper)
+        # 9. WHINE GATEKEEPER (Анти-Нытье в Grounded Storytelling)
+        # Отсекает уныние, жалобы и позицию жертвы без преодоления и пользы для клиента
+        whine_markers = [
+            "жалуемся", "жаловаться", "как всё плохо", "как все плохо",
+            "руки опускаются", "дороги не чистят", "клиентов мало",
+            "почему так тяжело", "несправедливо", "нет сил",
+            "все бесит", "всё бесит", "все надоело", "всё надоело",
+            "устали до смерти", "тяжелая доля", "тяжёлая доля",
+            "никто не ценит", "мы устали", "одни проблемы"
+        ]
+        resolution_markers = [
+            "справились", "успели", "для вас", "для гостей", "горячий", "готово", "ждем", "ждём",
+            "решили", "преодолели", "качество", "свежий", "смогли", "победили",
+            "рады", "результат", "зато", "сделали", "не зря", "получилось",
+            "встречаем", "доставили", "работаем для", "ради вас", "ради вашего"
+        ]
+        found_whine = [w for w in whine_markers if w in text_lower]
+        has_resolution = any(r in text_lower for r in resolution_markers)
+
+        if found_whine and not has_resolution:
+            score -= 0.25
+            fatal_flaws.append(
+                f"Whine Gatekeeper: Обнаружены жалобы и уныние ({found_whine}) без решения проблемы и ценности для клиента."
+            )
+            audit_breakdown['whine_gatekeeper'] = False
+        else:
+            audit_breakdown['whine_gatekeeper'] = True
+
+        # 10. FEEDBACK LOOP NEGATIVE CONSTRAINTS (Continuous Learning Gatekeeper)
         if negative_constraints:
             for constraint in negative_constraints:
                 failed_hook = constraint.get("failed_hook") or constraint.get("pattern") or constraint.get("text") or ""
@@ -312,6 +340,9 @@ class CriticMungerSkill:
             if cluster_spec.get("critic_actionable_rule"):
                 feedback_parts.append(cluster_spec["critic_actionable_rule"])
                 
+            if not audit_breakdown.get('whine_gatekeeper', True):
+                feedback_parts.append('Устраните уныние и жалобы. Трудности должны подаваться исключительно как преодоленное препятствие ради безупречного качества для гостя.')
+
             if not audit_breakdown.get('feedback_constraint', True):
                 feedback_parts.append('ПРИНУДИТЕЛЬНЫЙ ОТСЕВ: черновик повторяет исторически провальный паттерн аудитории. Полностью перепишите лид-зацеп.')
                 

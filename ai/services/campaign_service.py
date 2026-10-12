@@ -90,6 +90,7 @@ class CampaignService:
             **data,
             "company_name": company_name,
             "niche": niche,
+            "city": state.city or data.get("city", "Москва"),
             "prompt": topic,
             "tone": tone,
             "target_format": target_format.value,
@@ -99,6 +100,9 @@ class CampaignService:
         res = await self.generate_post(post_input, session_id=state.session_id)
 
         # 3. Синхронизация полей PipelineState
+        state.city = res.get("city") or post_input["city"]
+        state.local_news_context = res.get("local_news_context", [])
+        state.human_constraints = res.get("human_constraints", [])
         state.draft_text = res.get("clean_user_post_text") or res.get("post_text", "")
         if res.get("image_url") or res.get("photo_url"):
             photo_url = res.get("image_url") or res.get("photo_url")
@@ -237,6 +241,17 @@ class CampaignService:
             f"Опирайся на этот визуал, чтобы текст поста гармонировал с кадром."
         )
 
+        # 4.5. JIT Hyper-Local Context Grounding (Graceful degradation with Circuit Breaker & Strict 2.0s SLA)
+        from skills.local_context_grounder import LocalContextGrounder
+        grounder = LocalContextGrounder(io_timeout=1.2, total_sla_timeout=2.0)
+        local_grounding = await grounder.ground_context(
+            city=city,
+            niche=niche,
+            company_name=company_name
+        )
+        local_news_context = user_data.get("local_news_context") or local_grounding.local_news_context
+        human_constraints = user_data.get("human_constraints") or local_grounding.human_constraints
+
         # 5. Параллельные генеративные задачи: Текст + Фото
         from skills.saiga_llm import SaigaLLMSkill
         saiga = SaigaLLMSkill()
@@ -256,6 +271,8 @@ class CampaignService:
                 marketing_directive=marketing_bundle,
                 routing=routing_directive,
                 proven_hooks=proven_hooks_list,
+                local_news_context=local_news_context,
+                human_constraints=human_constraints,
             )
             p_text = gen_res.get("post_text", "")
 
@@ -362,6 +379,10 @@ class CampaignService:
             "photo_prompt": photo_result.get("photo_prompt", "") if photo_result else "",
             "critic_review": critic_res,
             "routing": routing_directive.dict() if hasattr(routing_directive, "dict") else {},
+            "city": city,
+            "local_news_context": local_news_context,
+            "human_constraints": human_constraints,
+            "local_grounding": local_grounding.dict() if hasattr(local_grounding, "dict") else {},
             "telemetry": {
                 "total_duration": total_duration,
                 "text_duration": text_result["duration"],

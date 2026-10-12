@@ -302,14 +302,35 @@ class SaigaLLMSkill:
         clean_text = re.sub(r'\n{3,}', '\n\n', clean_text).strip()
         return clean_text
 
-    @staticmethod
-    def _transform_brief_into_organic_story(topic: str, niche: str = "") -> str:
+    def _transform_brief_into_organic_story(
+        self,
+        topic: str,
+        niche: str = "",
+        local_news_context: Optional[List[str]] = None,
+        human_constraints: Optional[List[str]] = None,
+        city: str = ""
+    ) -> str:
         """
         Превращает сырой бриф/запрос пользователя в естественное и живое повествование:
         'хочу пост про новое меню' -> 'Мы подготовили обновленное сезонное меню и рады делиться любимыми вкусами.'
+        Обогащает текст заземлением на реальные физические трудности и повестку (Grounded Storytelling).
         """
+        ctx = local_news_context or getattr(self, "_current_local_news_context", None)
+        constraints = human_constraints or getattr(self, "_current_human_constraints", None)
+        c_city = city or getattr(self, "_current_city", "")
+
+        grounded_prefix = ""
+        if constraints and len(constraints) > 0:
+            c_text = str(constraints[0]).strip().rstrip(".")
+            city_clause = f"в г. {c_city} " if c_city and c_city != "Москва" else ""
+            grounded_prefix = f"Сегодня {city_clause}наша команда преодолела привычные рабочие вызовы: {c_text.lower()}, но мы справились и сделали всё, чтобы вы получили горячий результат и безупречное качество. "
+        elif ctx and len(ctx) > 0:
+            ctx_text = str(ctx[0]).strip().rstrip(".")
+            city_clause = f"в г. {c_city} " if c_city and c_city != "Москва" else ""
+            grounded_prefix = f"С самого утра {city_clause}день задал высокий темп ({ctx_text.lower()}), но мы вовремя завершили все приготовления и ждём вас за свежим качеством. "
+
         if not topic:
-            return "Делимся главными новостями и свежими идеями."
+            return (grounded_prefix + "Делимся главными новостями и свежими идеями.").strip()
             
         clean = topic.strip()
         # Убираем служебные префиксы
@@ -324,13 +345,13 @@ class SaigaLLMSkill:
             clean = re.sub(pat, "", clean, flags=re.IGNORECASE).strip()
             
         if not clean:
-            return "Делимся главными новостями и актуальными предложениями."
+            return (grounded_prefix + "Делимся главными новостями и актуальными предложениями.").strip()
             
         clean = clean[0].upper() + clean[1:] if len(clean) > 1 else clean.upper()
         if not clean.endswith((".", "!", "?")):
             clean += "."
             
-        return clean
+        return (grounded_prefix + clean).strip()
 
     def interpret_visual_context(
         self,
@@ -540,6 +561,8 @@ class SaigaLLMSkill:
         language: Optional[str] = "ru",
         vision_matrix: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
         proven_hooks: Optional[List[Dict[str, Any]]] = None,
+        local_news_context: Optional[List[str]] = None,
+        human_constraints: Optional[List[str]] = None,
         **kwargs
     ) -> dict:
         """
@@ -680,6 +703,31 @@ class SaigaLLMSkill:
                 )
         self._last_proven_hooks_info = proven_hooks_info
 
+        # 6. Grounded Storytelling (Hyper-Local Context & Human Constraints)
+        local_news_context = local_news_context or kwargs.get("local_news_context")
+        human_constraints = human_constraints or kwargs.get("human_constraints")
+        self._current_local_news_context = local_news_context
+        self._current_human_constraints = human_constraints
+        self._current_city = city
+
+        grounded_storytelling_info = ""
+        if local_news_context or human_constraints:
+            grounding_lines = []
+            if local_news_context:
+                ctx_str = "; ".join(local_news_context) if isinstance(local_news_context, list) else str(local_news_context)
+                grounding_lines.append(f"• Город и повестка дня ({city}): {ctx_str}")
+            if human_constraints:
+                c_str = "; ".join(human_constraints) if isinstance(human_constraints, list) else str(human_constraints)
+                grounding_lines.append(f"• Физические трудности и забота о качестве: {c_str}")
+            if grounding_lines:
+                grounded_storytelling_info = (
+                    "\nЛОКАЛЬНЫЙ КОНТЕКСТ И ПРЕОДОЛЕНИЕ ТРУДНОСТЕЙ (GROUNDED STORYTELLING):\n"
+                    + "\n".join(grounding_lines) + "\n"
+                    "СТРОГОЕ ПРАВИЛО: Начни пост с атмосферы сегодняшнего дня/утра и преодоленного препятствия. "
+                    "Покажи ценность продукта через реальный человеческий труд, а не через банальные хвалебные эпитеты.\n"
+                )
+        self._last_grounded_storytelling_info = grounded_storytelling_info
+
         # Если загружена реальная модель llama-cpp
         if self._is_loaded and self._llm and os.getenv("DISABLE_LOCAL_LLM", "").lower() not in ["1", "true", "yes"]:
             try:
@@ -730,6 +778,7 @@ class SaigaLLMSkill:
                     f"{mktg_info}\n"
                     f"{rag_info}\n"
                     f"{proven_hooks_info}"
+                    f"{grounded_storytelling_info}"
                     f"{vision_matrix_info}"
                     f"{visual_context or ''}{comments_info}"
                 )

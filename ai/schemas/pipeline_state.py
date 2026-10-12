@@ -36,9 +36,14 @@ class PipelineState(BaseModel):
     # 2. Исходные параметры задачи
     company_name: str = Field(default="", description="Название компании/бренда")
     niche: str = Field(default="бизнес", description="Отрасль / сфера бизнеса")
+    city: str = Field(default="Москва", description="Город / локация присутствия бизнеса")
     topic: str = Field(default="", description="Тема генерации или продукта")
     tone_of_voice: str = Field(default="Экспертный, лаконичный, живой", description="Tone of Voice")
     target_format: ContentFormatEnum = Field(default=ContentFormatEnum.POST, description="Целевой формат публикации")
+
+    # 2.1 Hyper-Local Context & Human Constraints (Grounded Storytelling)
+    local_news_context: List[str] = Field(default_factory=list, description="Свежие инфоповоды, события и погодные условия города")
+    human_constraints: List[str] = Field(default_factory=list, description="Выявленные человеческие и производственные трудности преодоления")
 
     # 3. Входные медиа, заметки и ссылки
     attachments: List[Dict[str, Any]] = Field(default_factory=list, description="Исходные фото, ссылки или файлы")
