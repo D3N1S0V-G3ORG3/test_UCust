@@ -67,6 +67,11 @@ class CleanRAGPipeline:
 
         # 1. Гибридный поиск с Multi-Tenant фильтром (Bounded: top_k_retrieval=10)
         retrieved_candidates = self.retriever.hybrid_search(cleaned_query, top_k=top_k_retrieval, tenant_id=tenant_id)
+        try:
+            from services.trend_service import TrendService
+            retrieved_candidates = TrendService.filter_active_trend_documents(retrieved_candidates)
+        except Exception:
+            pass
 
         # 2. Кросс-энкодер переранжирование (top_n_rerank=5)
         reranked_results = self.reranker.rerank(cleaned_query, retrieved_candidates, top_n=top_n_rerank)
@@ -113,12 +118,18 @@ class CleanRAGPipeline:
         retrieved_candidates = await self.retriever.hybrid_search_async(
             cleaned_query, top_k=top_k_retrieval, tenant_id=tenant_id
         )
+        try:
+            from services.trend_service import TrendService
+            retrieved_candidates = TrendService.filter_active_trend_documents(retrieved_candidates)
+        except Exception:
+            pass
 
         # 2. Реранкинг (CPU-bound → executor)
         loop = asyncio.get_running_loop()
         reranked_results = await loop.run_in_executor(
             None, self.reranker.rerank, cleaned_query, retrieved_candidates, top_n_rerank
         )
+
 
         # 3. Guardrail
         return self.guard.format_and_guard(cleaned_query, reranked_results)
