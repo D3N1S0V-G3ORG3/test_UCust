@@ -107,7 +107,7 @@ class CampaignService:
 
         critic_data = res.get("critic_review") or {}
         state.critic_score = float(critic_data.get("score", 1.0))
-        state.critic_flaws = critic_data.get("flaws", [])
+        state.critic_flaws = critic_data.get("fatal_flaws") or critic_data.get("flaws", [])
         state.fact_check_passed = bool(critic_data.get("passed", True))
 
         state.telemetry["pipeline_duration"] = res.get("telemetry", {}).get("total_duration", round(time.time() - t_start, 2))
@@ -154,6 +154,14 @@ class CampaignService:
         # 2. RAG-поиск с изоляцией тенанта
         rag_fact_context = None
         data_richness_score = 0.20
+        proven_hooks_list: List[Dict[str, Any]] = []
+        negative_constraints_list: List[Dict[str, Any]] = []
+
+        if user_data.get("proven_hooks"):
+            proven_hooks_list.extend(user_data["proven_hooks"])
+        if user_data.get("negative_constraints"):
+            negative_constraints_list.extend(user_data["negative_constraints"])
+
         if self.rag:
             try:
                 from skills.data_richness_engine import DataRichnessEngine
@@ -164,6 +172,24 @@ class CampaignService:
                     rag_fact_context = rag_ctx.formatted_context
                     drs_assessment = DataRichnessEngine.evaluate_text(rag_fact_context, company_name=company_name)
                     data_richness_score = drs_assessment.total_score / 100.0
+
+                # Динамическое извлечение инсайтов Continuous Learning из чанков RAG
+                if rag_ctx and rag_ctx.chunks:
+                    for chk in rag_ctx.chunks:
+                        m = getattr(chk, "metadata", {}) or {}
+                        m_type = m.get("type")
+                        if m_type == "proven_hook":
+                            proven_hooks_list.append({
+                                "hook": m.get("hook") or chk.text,
+                                "target_format": m.get("target_format"),
+                                "score": m.get("score"),
+                            })
+                        elif m_type == "negative_constraint":
+                            negative_constraints_list.append({
+                                "failed_hook": m.get("failed_hook") or chk.text,
+                                "penalty": m.get("penalty", 0.40),
+                                "reason": m.get("reason", "Исторически неэффективный паттерн с низким ER"),
+                            })
             except Exception as r_err:
                 logger.warning(f"[CampaignService] Ошибка RAG query: {r_err}")
 
@@ -229,18 +255,33 @@ class CampaignService:
                 rag_context=rag_fact_context,
                 marketing_directive=marketing_bundle,
                 routing=routing_directive,
+                proven_hooks=proven_hooks_list,
             )
             p_text = gen_res.get("post_text", "")
 
-            # OTK Проверка (Charlie Munger Critic 2.0)
+            # OTK Проверка (Charlie Munger Critic 2.0 с штрафами за неэффективные паттерны)
             from skills.critic_munger import CriticMungerSkill
             critic = CriticMungerSkill(strictness=0.80)
-            critic_res = critic.review_content(p_text, topic=prompt, target_audience=niche, routing=routing_directive, niche=niche)
+            critic_res = critic.review_content(
+                p_text,
+                topic=prompt,
+                target_audience=niche,
+                routing=routing_directive,
+                niche=niche,
+                negative_constraints=negative_constraints_list,
+            )
 
             if not critic_res.get("passed"):
                 # 1 итерация самоисправления
                 p_text = saiga.self_heal_text(p_text, critic_res.get("actionable_feedback", ""), routing=routing_directive)
-                critic_res = critic.review_content(p_text, topic=prompt, target_audience=niche, routing=routing_directive, niche=niche)
+                critic_res = critic.review_content(
+                    p_text,
+                    topic=prompt,
+                    target_audience=niche,
+                    routing=routing_directive,
+                    niche=niche,
+                    negative_constraints=negative_constraints_list,
+                )
 
             return {
                 "gen_result": gen_res,

@@ -45,8 +45,8 @@ class GenerationMetadataLink(BaseModel):
     Жесткая связка метрик с контекстом исходной генерации в PipelineState.
     Гарантирует прямую атрибуцию результатов к использованным промптам и фреймворкам.
     """
-    session_id: str = Field(..., description="ID оригинальной сессии генерации PipelineState")
-    post_id: str = Field(..., description="Уникальный идентификатор публикации в соцсети")
+    session_id: str = Field(default="", description="ID оригинальной сессии генерации PipelineState")
+    post_id: str = Field(default="", description="Уникальный идентификатор публикации в соцсети")
     tenant_id: str = Field(default="default_tenant", description="Идентификатор изолированного тенанта")
     channel: str = Field(default="@UcustAi", description="Целевой канал/сообщество")
     platform: str = Field(default="telegram", description="telegram | vk")
@@ -73,6 +73,26 @@ class PostTelemetryEvent(BaseModel):
     metrics: TelemetryMetrics = Field(default_factory=TelemetryMetrics)
     generation_context: Optional[GenerationMetadataLink] = Field(None, description="Контекст генерации (если известен)")
     collected_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat() + "Z")
+
+    @model_validator(mode="before")
+    @classmethod
+    def populate_context_ids(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            p_id = data.get("post_id", "")
+            s_id = data.get("session_id", "")
+            ctx = data.get("generation_context")
+            if isinstance(ctx, dict):
+                if not ctx.get("post_id"):
+                    ctx["post_id"] = p_id
+                if not ctx.get("session_id"):
+                    ctx["session_id"] = s_id
+                if not ctx.get("tenant_id") and data.get("tenant_id"):
+                    ctx["tenant_id"] = data.get("tenant_id")
+                if not ctx.get("channel") and data.get("channel"):
+                    ctx["channel"] = data.get("channel")
+                if not ctx.get("platform") and data.get("platform"):
+                    ctx["platform"] = data.get("platform")
+        return data
 
     @property
     def deduplication_key(self) -> str:

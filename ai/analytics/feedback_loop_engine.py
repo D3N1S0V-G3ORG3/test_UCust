@@ -45,6 +45,14 @@ class FeedbackLoopEngine:
     DEFAULT_BASELINE_MEAN_ER: float = 2.5
     DEFAULT_BASELINE_STD_DEV: float = 1.0
 
+    _instance: Optional["FeedbackLoopEngine"] = None
+
+    @classmethod
+    def get_instance(cls, redis_client: Optional[Any] = None) -> "FeedbackLoopEngine":
+        if cls._instance is None:
+            cls._instance = cls(redis_client=redis_client)
+        return cls._instance
+
     def __init__(self, redis_client: Optional[Any] = None) -> None:
         self.redis = redis_client
         # In-memory хранилище для локальной разработки / fallback:
@@ -332,6 +340,7 @@ class FeedbackLoopEngine:
                     "tenant_id": refinement.tenant_id,
                     "target_format": hook.get("target_format"),
                     "score": hook.get("normalized_score"),
+                    "hook": hook.get("hook_text"),
                 }
             ))
 
@@ -351,6 +360,8 @@ class FeedbackLoopEngine:
                     "tenant_id": refinement.tenant_id,
                     "target_format": constraint.get("target_format"),
                     "penalty": constraint.get("critic_penalty", 0.40),
+                    "failed_hook": constraint.get("failed_hook"),
+                    "reason": constraint.get("reason"),
                 }
             ))
 

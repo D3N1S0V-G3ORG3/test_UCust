@@ -35,6 +35,7 @@ QUEUE_START = "start"                # Старт (базовый тариф)
 QUEUE_BUSINESS = "business"          # Бизнес (коммерческий тариф)
 QUEUE_CUSTOM = "custom"              # Свой тариф / Кастомный (VIP)
 QUEUE_TREND_MINING = "trend_mining"  # Фоновый сбор, кластеризация и анализ трендов
+QUEUE_FEEDBACK = "feedback_loop"      # Фоновый сбор и анализ телеметрии, самообучение
 
 # Маппинг тарифов к очередям
 TIER_QUEUES: Dict[str, str] = {
@@ -52,6 +53,9 @@ TIER_QUEUES: Dict[str, str] = {
     "vip": QUEUE_CUSTOM,
     "trends": QUEUE_TREND_MINING,
     "trend_mining": QUEUE_TREND_MINING,
+    "feedback": QUEUE_FEEDBACK,
+    "feedback_loop": QUEUE_FEEDBACK,
+    "telemetry": QUEUE_FEEDBACK,
 }
 
 def get_queue_for_tier(tier: Optional[str] = None) -> str:
@@ -79,6 +83,7 @@ if HAS_CELERY:
             "celery_tasks.audit_post_task": {"queue": QUEUE_BUSINESS},
             "celery_tasks.collect_raw_trends_task": {"queue": QUEUE_TREND_MINING},
             "celery_tasks.process_trend_clusters_task": {"queue": QUEUE_TREND_MINING},
+            "celery_tasks.collect_channel_telemetry_batch_task": {"queue": QUEUE_FEEDBACK},
             "celery_tasks.*": {"queue": QUEUE_BUSINESS},
         },
         beat_schedule={
@@ -91,6 +96,11 @@ if HAS_CELERY:
                 "task": "celery_tasks.process_trend_clusters_task",
                 "schedule": 7200.0,
                 "options": {"queue": QUEUE_TREND_MINING},
+            },
+            "collect-telemetry-hourly": {
+                "task": "celery_tasks.collect_channel_telemetry_batch_task",
+                "schedule": 3600.0,
+                "options": {"queue": QUEUE_FEEDBACK},
             },
         },
         worker_prefetch_multiplier=1,
@@ -628,5 +638,138 @@ def enqueue_trend_mining_task(
         "tenant_id": tenant_id,
         "timestamp": datetime.utcnow().isoformat(),
     }
+
+
+@celery_app.task(name="celery_tasks.collect_channel_telemetry_batch_task", bind=True)
+def collect_channel_telemetry_batch_task(
+    self,
+    channel: str = "@ucust_demo",
+    platform: str = "telegram",
+    tenant_id: str = "default_tenant",
+    batch_limit: int = 50,
+    mock_events: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """
+    Пакетный сбор и ингестия телеметрии публикаций канала (Feedback Loop Continuous Learning):
+    - Батчирование постов на уровне канала (до batch_limit постов за прогон, защита от взрыва очередей).
+    - Защищен CircuitBreaker("social_telemetry_collector", failure_threshold=3, recovery_timeout=60.0).
+    - Обрабатывает метрики через FeedbackLoopEngine (Z-score + Sigmoid ER нормализация).
+    - Автоматически синхронизирует проверенные зацепы и штрафные ограничения в Clean RAG Pipeline.
+    """
+    logger.info(f"📈 [Celery:feedback_loop] Пакетный сбор телеметрии канала {channel} ({platform}, tenant={tenant_id})...")
+
+    from core.resilience import CircuitBreaker, CircuitBreakerOpenException
+    from schemas.feedback_state import PostTelemetryEvent
+    from analytics.feedback_loop_engine import FeedbackLoopEngine
+    from rag.pipeline import CleanRAGPipeline
+
+    cb = CircuitBreaker("social_telemetry_collector", failure_threshold=3, recovery_timeout=60.0)
+
+    async def _async_batch_process():
+        # Вспомогательная функция сбора данных под защитой Circuit Breaker
+        async def _fetch_channel_metrics():
+            if mock_events is not None:
+                return mock_events[:batch_limit]
+            # В боевой интеграции: API Telegram/VK с таймаутом
+            return []
+
+        try:
+            raw_batch = await cb.call(_fetch_channel_metrics)
+        except CircuitBreakerOpenException as cbe:
+            logger.warning(f"🛡️ [FeedbackLoop] Circuit Breaker OPEN: {cbe}")
+            return {
+                "status": "circuit_breaker_open",
+                "channel": channel,
+                "platform": platform,
+                "tenant_id": tenant_id,
+                "processed_count": 0,
+                "circuit_breaker": cb.get_status(),
+            }
+
+        engine = FeedbackLoopEngine.get_instance()
+        rag_pipeline = CleanRAGPipeline()
+
+        processed_events: List[Dict[str, Any]] = []
+        total_proven_hooks = 0
+        total_negative_constraints = 0
+        total_rag_indexed = 0
+
+        for item in raw_batch:
+            if isinstance(item, dict):
+                ev = PostTelemetryEvent(**item)
+            elif isinstance(item, PostTelemetryEvent):
+                ev = item
+            else:
+                continue
+
+            score = engine.ingest_telemetry(ev)
+            refinement = engine.refine_knowledge(ev, score)
+            total_proven_hooks += len(refinement.proven_hooks)
+            total_negative_constraints += len(refinement.negative_constraints)
+
+            indexed = await engine.sync_refinements_to_rag(refinement, rag_pipeline)
+            total_rag_indexed += indexed
+
+            processed_events.append({
+                "post_id": ev.post_id,
+                "normalized_score": score.normalized_score,
+                "raw_er": score.raw_er,
+                "tier": score.tier.value,
+            })
+
+        return {
+            "status": "success",
+            "task_id": getattr(self.request, "id", "sync-task"),
+            "channel": channel,
+            "platform": platform,
+            "tenant_id": tenant_id,
+            "processed_count": len(processed_events),
+            "proven_hooks_count": total_proven_hooks,
+            "negative_constraints_count": total_negative_constraints,
+            "rag_indexed_chunks": total_rag_indexed,
+            "events_summary": processed_events,
+            "circuit_breaker": cb.get_status(),
+        }
+
+    try:
+        return _run_async(_async_batch_process())
+    except Exception as exc:
+        logger.error(f"❌ [Celery:feedback_loop] Ошибка пакетного сбора телеметрии: {exc}")
+        raise exc
+
+
+def enqueue_telemetry_batch_task(
+    channel: str = "@ucust_demo",
+    platform: str = "telegram",
+    tenant_id: str = "default_tenant",
+    batch_limit: int = 50,
+    mock_events: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """Вспомогательная функция для постановки задачи пакетного сбора телеметрии в очередь feedback_loop."""
+    if HAS_CELERY and hasattr(collect_channel_telemetry_batch_task, "apply_async"):
+        async_result = collect_channel_telemetry_batch_task.apply_async(
+            kwargs={
+                "channel": channel,
+                "platform": platform,
+                "tenant_id": tenant_id,
+                "batch_limit": batch_limit,
+                "mock_events": mock_events,
+            },
+            queue=QUEUE_FEEDBACK,
+        )
+        task_id = async_result.id
+    else:
+        import uuid
+        task_id = f"mock_telemetry_{uuid.uuid4().hex[:12]}"
+
+    return {
+        "status": "QUEUED",
+        "task_id": task_id,
+        "queue": QUEUE_FEEDBACK,
+        "channel": channel,
+        "tenant_id": tenant_id,
+        "timestamp": datetime.utcnow().isoformat(),
+    }
+
 
 

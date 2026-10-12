@@ -24,7 +24,7 @@ services:
       - ENVIRONMENT=production
       - LOG_LEVEL=INFO
       - DEV_SIMULATION_MODE=false
-    command: celery -A celery_tasks.celery_app worker --loglevel=info --concurrency=4 -Q custom,business,start,trend_mining
+    command: celery -A celery_tasks.celery_app worker --loglevel=info --concurrency=4 -Q custom,business,start,trend_mining,feedback_loop
 
   # ----------------------------------------------------------------------------
   # Production Celery GPU Worker (NVIDIA GPU Pass-Through for Tensor Renders)

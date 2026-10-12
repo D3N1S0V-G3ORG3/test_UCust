@@ -53,7 +53,8 @@ class CriticMungerSkill:
         topic: str = '',
         target_audience: str = '',
         routing: Optional[RoutingDirective] = None,
-        niche: str = ''
+        niche: str = '',
+        negative_constraints: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
 
         if not text or len(text.strip()) < 20:
@@ -263,6 +264,36 @@ class CriticMungerSkill:
             else:
                 audit_breakdown['freelance_outcome'] = True
 
+        # 9. FEEDBACK LOOP NEGATIVE CONSTRAINTS (Continuous Learning Gatekeeper)
+        if negative_constraints:
+            for constraint in negative_constraints:
+                failed_hook = constraint.get("failed_hook") or constraint.get("pattern") or constraint.get("text") or ""
+                penalty = float(constraint.get("critic_penalty") or constraint.get("penalty") or 0.40)
+                reason = constraint.get("reason") or "Провальный исторический паттерн с аномально низким ER."
+
+                is_match = False
+                if failed_hook and len(failed_hook.strip()) > 10:
+                    hook_lower = failed_hook.strip().lower()
+                    key_words = [w for w in re.findall(r'\b[а-яёa-z]{4,}\b', hook_lower) if len(w) > 3]
+                    if len(key_words) >= 2:
+                        matched_words = sum(1 for kw in key_words if kw in text_lower)
+                        match_ratio = matched_words / float(len(key_words))
+                        if match_ratio >= 0.50:  # 50% ключевых смысловых слов совпало
+                            is_match = True
+                    elif hook_lower in text_lower:
+                        is_match = True
+
+                if is_match:
+                    fatal_flaws.append(
+                        f"Feedback Negative Constraint: Обнаружен исторически неэффективный паттерн ('{failed_hook[:60]}...'). {reason}"
+                    )
+                    audit_breakdown['feedback_constraint'] = False
+                    # Принудительное математическое пенализирование: final_score = score * penalty
+                    score = score * penalty
+                    cautions.append(
+                        f"Запрещено использовать неэффективный паттерн: '{failed_hook[:60]}...' (штраф обратной связи -{int((1.0 - penalty) * 100)}%). Смените структуру хука."
+                    )
+
         score = max(0.1, min(1.0, round(score, 2)))
         passed = score >= self.strictness
 
@@ -280,6 +311,9 @@ class CriticMungerSkill:
             # Добавление специализированного правила критики кластера
             if cluster_spec.get("critic_actionable_rule"):
                 feedback_parts.append(cluster_spec["critic_actionable_rule"])
+                
+            if not audit_breakdown.get('feedback_constraint', True):
+                feedback_parts.append('ПРИНУДИТЕЛЬНЫЙ ОТСЕВ: черновик повторяет исторически провальный паттерн аудитории. Полностью перепишите лид-зацеп.')
                 
             if not audit_breakdown.get('lexicon_gatekeeper', True):
                 feedback_parts.append('Удалите несоответствующий B2B-жаргон (KPI, ROI, оптимизация бюджета) из лайфстайл-поста.')

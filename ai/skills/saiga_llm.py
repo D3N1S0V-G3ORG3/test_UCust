@@ -539,6 +539,7 @@ class SaigaLLMSkill:
         primary_cta: Optional[str] = None,
         language: Optional[str] = "ru",
         vision_matrix: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
+        proven_hooks: Optional[List[Dict[str, Any]]] = None,
         **kwargs
     ) -> dict:
         """
@@ -656,6 +657,29 @@ class SaigaLLMSkill:
             except Exception:
                 pass
 
+        # 5. Proven Hooks (Echo-Chamber Guard & Continuous Learning)
+        proven_hooks = proven_hooks or kwargs.get("proven_hooks")
+        proven_hooks_info = ""
+        if proven_hooks and isinstance(proven_hooks, list):
+            top_hooks = [h for h in proven_hooks if isinstance(h, (dict, str))][:2]
+            hooks_lines = []
+            for idx, h in enumerate(top_hooks, 1):
+                if isinstance(h, dict):
+                    h_txt = h.get("hook") or h.get("hook_text") or h.get("pattern") or h.get("text") or str(h)
+                else:
+                    h_txt = str(h)
+                hooks_lines.append(f"• Пример структуры {idx}: «{h_txt.strip()}»")
+
+            if hooks_lines:
+                proven_hooks_info = (
+                    "\nПАТТЕРНЫ ВЫСОКОГО ОТКЛИКА АУДИТОРИИ (ECHO-CHAMBER GUARD & CONTINUOUS LEARNING):\n"
+                    "Ниже приведены примеры структур, показавших высокий отклик аудитории. "
+                    "Твоя задача — извлечь из них психологический триггер (например, интригу в первом предложении или формат списка) "
+                    "и применить его к абсолютно новой теме, не копируя слова и сущности из примеров.\n"
+                    + "\n".join(hooks_lines) + "\n"
+                )
+        self._last_proven_hooks_info = proven_hooks_info
+
         # Если загружена реальная модель llama-cpp
         if self._is_loaded and self._llm and os.getenv("DISABLE_LOCAL_LLM", "").lower() not in ["1", "true", "yes"]:
             try:
@@ -705,9 +729,11 @@ class SaigaLLMSkill:
                     f"{lang_info}"
                     f"{mktg_info}\n"
                     f"{rag_info}\n"
+                    f"{proven_hooks_info}"
                     f"{vision_matrix_info}"
                     f"{visual_context or ''}{comments_info}"
                 )
+                self._last_system_instruction = system_instruction
 
                 fw_name = marketing_directive.get('framework', 'экспертный стиль') if marketing_directive else 'экспертный стиль'
                 hunt_name = marketing_directive.get('hunt_stage', 'осознание') if marketing_directive else 'осознание'

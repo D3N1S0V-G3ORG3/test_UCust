@@ -145,7 +145,7 @@ services:
       dockerfile: Dockerfile
     container_name: ucust_celery_worker_gpu
     restart: unless-stopped
-    command: celery -A celery_tasks.celery_app worker --loglevel=info --concurrency=1 -Q custom,business,start
+    command: celery -A celery_tasks.celery_app worker --loglevel=info --concurrency=1 -Q custom,business,start,trend_mining,feedback_loop
     depends_on:
       redis:
         condition: service_healthy
