@@ -622,3 +622,103 @@ class ContentStrategyEngine:
         post.vram_cost_mb = VRAMCostCalculator.calculate_total_post_vram(post, dev_simulation_mode=True)
         return post
 
+    def generate_content_plan(
+        self,
+        company_name: str,
+        niche: str,
+        visual_grid_dna: Optional[Dict[str, Any]] = None,
+        rag_insights: Optional[Dict[str, Any]] = None,
+        days_count: int = 7,
+        country: Optional[str] = None,
+        city: Optional[str] = None,
+        start_date: Optional[str] = None,
+        feedback_insights: Optional[Dict[str, Any]] = None,
+        user_data: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Генерирует контент-план на N дней, привязанный к болям аудитории из RAG
+        и сопоставленный со слотами матрицы 3x3 визуальной сетки ленты.
+        """
+        grid_slots = (visual_grid_dna or {}).get("grid_3x3_slots", [])
+        brand_colors = (visual_grid_dna or {}).get("brand_hex_palette", ["#1F2937", "#3B82F6", "#F3F4F6"])
+        pains = (rag_insights or {}).get("pain_points", [
+            "Страх некачественного результата",
+            "Высокие цены и скрытые переплаты",
+            "Нехватка времени и сложный процесс"
+        ])
+
+        stages = ["TOFU", "MOFU", "BOFU", "TOFU", "MOFU", "BOFU", "MOFU"]
+        plan_items = []
+
+        for day in range(1, days_count + 1):
+            stage = stages[(day - 1) % len(stages)]
+            slot_idx = (day - 1) % (len(grid_slots) if grid_slots else 9)
+            slot_info = grid_slots[slot_idx] if grid_slots and slot_idx < len(grid_slots) else {
+                "slot": slot_idx + 1,
+                "type": "lifestyle",
+                "title": "Брендовый кадр",
+                "description": "Эстетичный кадр с фирменными цветами"
+            }
+            pain = pains[(day - 1) % len(pains)]
+
+            if stage == "TOFU":
+                topic = f"Как избежать главной ошибки в {niche}: секреты профессионалов"
+                format_type = "Пост-разбор + Вопрос в комментариях"
+            elif stage == "MOFU":
+                topic = f"Честно о том, как мы закрываем проблему «{pain}» в {company_name}"
+                format_type = "Кейс До/После + Демонстрация процесса"
+            else: # BOFU
+                topic = f"Специальное предложение от «{company_name}»: гарантия качества и выгода"
+                format_type = "Продающий оффер + Промокод + CTA"
+
+            plan_items.append({
+                "day": day,
+                "stage": stage,
+                "topic": topic,
+                "target_pain_point": pain,
+                "format": format_type,
+                "grid_slot": {
+                    "slot_number": slot_info.get("slot", slot_idx + 1),
+                    "shot_type": slot_info.get("type"),
+                    "visual_title": slot_info.get("title"),
+                    "visual_guidance": f"Съемка в стиле '{slot_info.get('title')}'. Палитра: {', '.join(brand_colors[:2])}."
+                }
+            })
+
+        return {
+            "status": "success",
+            "company_name": company_name,
+            "niche": niche,
+            "plan_days": plan_items,
+            "brand_palette": brand_colors,
+            "summary": f"Контент-план на {days_count} дней успешно сбалансирован по воронке TOFU/MOFU/BOFU и синхронизирован с 3x3 сеткой."
+        }
+
+    def generate_30day_content_plan(
+        self,
+        company_name: str,
+        niche: str,
+        city: Optional[str] = "Москва",
+        country: Optional[str] = "Россия",
+        rag_insights: Optional[Dict[str, Any]] = None,
+        user_data: Optional[Dict[str, Any]] = None,
+        visual_grid_dna: Optional[Dict[str, Any]] = None,
+        feedback_insights: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Алиас для генерации 30-дневного (или N-дневного) контент-плана."""
+        days = 30
+        if user_data and user_data.get("days_count"):
+            days = int(user_data["days_count"])
+        return self.generate_content_plan(
+            company_name=company_name,
+            niche=niche,
+            visual_grid_dna=visual_grid_dna,
+            rag_insights=rag_insights,
+            days_count=days,
+            country=country,
+            city=city,
+            feedback_insights=feedback_insights,
+            user_data=user_data,
+        )
+
+
