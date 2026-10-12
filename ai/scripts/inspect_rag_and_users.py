@@ -236,5 +236,58 @@ def inspect_system():
 
     print("\n" + "=" * 70 + "\n")
 
+    # Автоматическая подсказка или действие по --init
+    if "user_profiles" not in existing_tables:
+        print("💡 ВНИМАНИЕ: Таблицы пользователей еще не созданы в этой базе данных.")
+        print("   Вы можете создать их прямо сейчас, выполнив:")
+        print("   python scripts/inspect_rag_and_users.py --init\n")
+
+    if "--init" in sys.argv:
+        print("⚙️ Инициализация всех таблиц приложения в базе данных...")
+        try:
+            from storage.models import Base as StorageBase
+            from models.db_models import Base as RAGBase
+            StorageBase.metadata.create_all(bind=engine)
+            if hasattr(RAGBase, "metadata"):
+                RAGBase.metadata.create_all(bind=engine)
+            print("✅ Все таблицы успешно созданы!")
+        except Exception as init_err:
+            print(f"❌ Ошибка создания таблиц: {init_err}")
+
+    if "--seed" in sys.argv:
+        print("🌱 Добавление тестового профиля и базы знаний...")
+        try:
+            from storage.models import UserProfile, Base
+            from sqlalchemy.orm import sessionmaker
+            SessionLocal = sessionmaker(bind=engine)
+            session = SessionLocal()
+            
+            # Проверяем, есть ли уже
+            exists = session.query(UserProfile).filter(UserProfile.user_id == "demo_coffee_01").first()
+            if not exists:
+                demo_user = UserProfile(
+                    user_id="demo_coffee_01",
+                    external_user_id="demo_coffee_01",
+                    company_name="CoffeeCraft",
+                    niche="кофейня",
+                    city="Казань",
+                    country="Россия",
+                    target_audience="Любители авторского кофе 20-40 лет, фрилансеры и студенты",
+                    step1={"voice_and_tone": "Теплый, гостеприимный, экспертный", "brand_colors": ["#4A2E18", "#E6C280"]},
+                    step2={"geography": "Казань, ул. Баумана 15"},
+                    step3={"strengths": ["100% арабика свежей обжарки", "авторские десерты"]},
+                    step4={"services": ["Классический кофе", "Сезонный тыквенный латте", "Матча", "Десерты"]},
+                    step5={"goals": ["Привлечение гостей на осеннее меню", "Рост повторных заказов"]},
+                    connected_channels=["telegram", "vk"]
+                )
+                session.add(demo_user)
+                session.commit()
+                print("✅ Тестовый профиль 'CoffeeCraft' успешно добавлен в user_profiles!")
+            else:
+                print("ℹ️ Профиль 'demo_coffee_01' уже существует.")
+            session.close()
+        except Exception as seed_err:
+            print(f"❌ Ошибка добавления тестовых данных: {seed_err}")
+
 if __name__ == "__main__":
     inspect_system()

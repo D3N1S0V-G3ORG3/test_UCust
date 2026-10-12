@@ -61,13 +61,20 @@ def get_async_engine():
     global _db_engine
     if _db_engine is None:
         raw_url = os.getenv("DATABASE_URL", DEFAULT_DB_URL)
-        if create_async_engine is not None and "asyncpg" in raw_url:
+        if raw_url.startswith("postgresql://"):
+            async_url = raw_url.replace("postgresql://", "postgresql+asyncpg://")
+        elif raw_url.startswith("postgres://"):
+            async_url = raw_url.replace("postgres://", "postgresql+asyncpg://")
+        else:
+            async_url = raw_url
+
+        if create_async_engine is not None and "asyncpg" in async_url:
             try:
-                _db_engine = create_async_engine(raw_url, echo=False, future=True)
-                logger.info("Created AsyncEngine for PostgreSQL (%s)", raw_url.split("@")[-1])
+                _db_engine = create_async_engine(async_url, echo=False, future=True)
+                logger.info("Created AsyncEngine for PostgreSQL (%s)", async_url.split("@")[-1])
                 return _db_engine
             except Exception as exc:
-                logger.warning("AsyncEngine creation failed for '%s': %s", raw_url, exc)
+                logger.warning("AsyncEngine creation failed for '%s': %s", async_url, exc)
 
         fallback_url = "sqlite:///./ai_smm_dev.db"
         _db_engine = create_engine(fallback_url, echo=False, future=True)
