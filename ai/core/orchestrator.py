@@ -14,10 +14,14 @@ import json
 import time
 import hashlib
 import asyncio
+import logging
 import threading
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from enum import Enum
+
+logger = logging.getLogger("PipelineOrchestratorFacade")
+
 
 from storage.models import UserProfile, OrchestratorTrace, PublicationHistory, ProjectMetadata, ContentTask
 from schemas.pipeline_state import PipelineState, ContentFormatEnum
@@ -224,20 +228,96 @@ class PipelineOrchestratorFacade:
         user_data: Optional[Dict[str, Any]] = None,
         auto_publish: bool = False,
     ) -> PipelineState:
-        """Сквозной конвейер состояний Pipeline State Graph."""
-        state = await self.brand_service.process_brand(state, user_data=user_data)
-        state = await self.campaign_service.generate_campaign(state, user_data=user_data)
-        if auto_publish:
-            state = await self.publishing_service.publish(state, user_data=user_data)
-        return state
+        """
+        Сквозной конвейер состояний Pipeline State Graph.
+        Включает расчет метрик телеметрии (длительность этапов, токены, расчет стоимости $)
+        и структурированное JSON-логирование для ELK / Grafana Loki.
+        """
+        start_time = time.time()
+        try:
+            state = await self.brand_service.process_brand(state, user_data=user_data)
+            state = await self.campaign_service.generate_campaign(state, user_data=user_data)
+            if auto_publish:
+                state = await self.publishing_service.publish(state, user_data=user_data)
+
+            duration = time.time() - start_time
+            state.telemetry["total_pipeline_duration"] = round(duration, 3)
+
+            # Оценка потребления токенов и стоимости инференса ($0.000002 / token)
+            prompt_chars = len(str(user_data or {})) + len(state.topic or "") + len(state.rag_facts or []) * 50
+            completion_chars = len(state.draft_text or "")
+            prompt_tokens = max(1, prompt_chars // 3)
+
+            completion_tokens = max(1, completion_chars // 3)
+            total_tokens = prompt_tokens + completion_tokens
+            cost_usd = round(total_tokens * 0.000002, 6)
+
+            token_data = {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": total_tokens,
+            }
+            state.telemetry["token_consumption"] = token_data
+            state.telemetry["cost_usd"] = cost_usd
+
+            # Structured JSON Log (ELK / Grafana Loki compatible)
+            structured_log = {
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "logger": "PipelineOrchestratorFacade",
+                "level": "INFO",
+                "event": "pipeline_execution_completed",
+                "session_id": state.session_id,
+                "tenant_id": state.tenant_id,
+                "company_name": state.company_name,
+                "status": "success",
+                "timings": state.telemetry.get("timings", {}),
+                "total_duration_sec": round(duration, 3),
+                "token_consumption": token_data,
+                "cost_estimation_usd": cost_usd,
+                "critic_score": state.critic_score,
+                "is_published": state.is_published,
+            }
+            logger.info(json.dumps(structured_log, ensure_ascii=False))
+
+            try:
+                from core.observability import ObservabilityManager
+                ObservabilityManager.record_task_duration("pipeline_execution", duration, status="success")
+            except Exception:
+                pass
+
+            return state
+
+        except Exception as exc:
+            duration = time.time() - start_time
+            err_log = {
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "logger": "PipelineOrchestratorFacade",
+                "level": "ERROR",
+                "event": "pipeline_execution_failed",
+                "session_id": state.session_id if state else "unknown",
+                "tenant_id": state.tenant_id if state else "unknown",
+                "error": str(exc),
+                "status": "error",
+                "duration_sec": round(duration, 3),
+            }
+            logger.error(json.dumps(err_log, ensure_ascii=False))
+            try:
+                from core.observability import ObservabilityManager
+                ObservabilityManager.record_task_duration("pipeline_execution", duration, status="error")
+            except Exception:
+                pass
+            raise exc
+
 
     async def execute_task(self, task_type: str, user_data: dict, session_id: Optional[str] = None) -> dict:
         """
         Универсальный обработчик задач (точка входа для API и воркеров).
         Делегирует исполнение доменным сервисам на основе типизированного контракта.
         """
+        task_start_time = time.time()
         session_id = session_id or str(uuid.uuid4())
         print(f"\n[PipelineFacade] ⚖️ Новая задача '{task_type}', сессия: {session_id}")
+
 
         # 1. Проверка безопасности (Security Layer)
         raw_input = user_data.get("raw_social_input", "")
@@ -409,8 +489,14 @@ class PipelineOrchestratorFacade:
             if task_type in {"rag_query", "query_rag", "search_knowledge"}:
                 q = user_data.get("query") or user_data.get("prompt") or ""
                 t_id = user_data.get("tenant_id") or "default_tenant"
+                # Проверяем кэш RAG с TTL (4 часа)
+                cached_ctx = self.redis_cache.get_cached_rag_query(q, tenant_id=t_id)
+                if cached_ctx:
+                    return {"status": "success", "context": cached_ctx.get("context", ""), "has_context": cached_ctx.get("has_context", True), "cached": True}
                 rag_res = await self.rag.query_async(q, tenant_id=t_id)
-                return {"status": "success", "context": rag_res.formatted_context, "has_context": rag_res.has_sufficient_context}
+                rag_dict = {"context": rag_res.formatted_context, "has_context": rag_res.has_sufficient_context}
+                self.redis_cache.set_cached_rag_query(q, tenant_id=t_id, result=rag_dict, ttl=14400)
+                return {"status": "success", **rag_dict}
 
             if task_type in {"get_graph_data", "graph_data", "metrics"}:
                 return {"status": "success", "metrics": self.get_frontend_graph_data()}
@@ -433,11 +519,51 @@ class PipelineOrchestratorFacade:
                 "task_type": task_type,
                 "duration": res.get("telemetry", {}).get("total_duration", 0),
             })
+
+            # Structured JSON Log & Observability
+            task_duration = time.time() - task_start_time
+            structured_log = {
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "logger": "PipelineOrchestratorFacade",
+                "level": "INFO",
+                "event": "task_execution_completed",
+                "task_type": task_type,
+                "session_id": session_id,
+                "tenant_id": state.tenant_id,
+                "status": "success",
+                "duration_sec": round(task_duration, 3),
+            }
+            logger.info(json.dumps(structured_log, ensure_ascii=False))
+            try:
+                from core.observability import ObservabilityManager
+                ObservabilityManager.record_task_duration(task_type, task_duration, status="success")
+            except Exception:
+                pass
+
             return res
 
         except Exception as exc:
+            task_duration = time.time() - task_start_time
             print(f"[PipelineFacade] ⚠️ Ошибка выполнения задачи '{task_type}': {exc}")
+            err_log = {
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "logger": "PipelineOrchestratorFacade",
+                "level": "ERROR",
+                "event": "task_execution_failed",
+                "task_type": task_type,
+                "session_id": session_id,
+                "error": str(exc),
+                "status": "error",
+                "duration_sec": round(task_duration, 3),
+            }
+            logger.error(json.dumps(err_log, ensure_ascii=False))
+            try:
+                from core.observability import ObservabilityManager
+                ObservabilityManager.record_task_duration(task_type, task_duration, status="error")
+            except Exception:
+                pass
             return {"status": "error", "task_type": task_type, "message": str(exc), "session_id": session_id}
+
 
     def get_frontend_graph_data(self) -> List[dict]:
         """Безопасная отдача агрегированных данных фронтенду для графиков (DLP защищено)."""

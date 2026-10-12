@@ -18,19 +18,19 @@ class VkPublisher(BasePublisher):
     platform_name = "vk"
 
     def __init__(self, access_token: Optional[str] = None, group_id: Optional[str] = None) -> None:
+        gid = group_id or os.getenv("UCUST_VK_GROUP_ID", "ucustai")
+        super().__init__(target_channel=gid)
         self.access_token = access_token or os.getenv("UCUST_VK_ACCESS_TOKEN", "mock_vk_token")
-        self.group_id = group_id or os.getenv("UCUST_VK_GROUP_ID", "ucustai")
+        self.group_id = gid
 
-    async def publish(self, text: str, media_path: Optional[str] = None) -> bool:
+    async def _execute_publish(
+        self,
+        text: str,
+        media_path: Optional[str] = None,
+        **kwargs: Any
+    ) -> Dict[str, Any]:
         """
         Publishes text and uploads local media file to VK community wall (wall.post).
-
-        Args:
-            text: Post body text.
-            media_path: Absolute path to local file on server disk.
-
-        Returns:
-            bool: True if publication succeeded, False otherwise.
         """
         logger.info(
             "[VkPublisher] Publishing to VK community wall '%s' (text length: %d chars)...",
@@ -51,7 +51,14 @@ class VkPublisher(BasePublisher):
 
         post_id = f"vk_wall_{os.urandom(4).hex()}"
         logger.info("[VkPublisher] Wall post published successfully. Post ID: %s", post_id)
-        return True
+        return {
+            "status": "success",
+            "platform": "vk",
+            "channel": self.group_id,
+            "post_id": post_id,
+            "media_attached": media_attached,
+        }
+
 
     async def publish_poll(
         self,

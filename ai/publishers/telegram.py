@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Optional
+from typing import Optional, Union, List, Dict, Any
 
 from .base import BasePublisher
 
@@ -33,12 +33,15 @@ class TelegramPublisher(BasePublisher):
         target_channel: Optional[str] = None,
         bot_token: Optional[str] = None,
     ) -> None:
+        target_ch = target_channel or os.getenv("TELEGRAM_TARGET_CHANNEL", os.getenv("UCUST_TELEGRAM_CHANNEL_ID", "@UcustAi"))
+        super().__init__(target_channel=target_ch)
         self.api_id = api_id or int(os.getenv("TELEGRAM_API_ID", os.getenv("UCUST_TELEGRAM_API_ID", "123456")))
         self.api_hash = api_hash or os.getenv("TELEGRAM_API_HASH", os.getenv("UCUST_TELEGRAM_API_HASH", "mock_api_hash"))
         self.session_name = session_name or os.getenv("TELEGRAM_SESSION_NAME", "ucust_userbot_session")
-        self.target_channel = target_channel or os.getenv("TELEGRAM_TARGET_CHANNEL", os.getenv("UCUST_TELEGRAM_CHANNEL_ID", "@UcustAi"))
+        self.target_channel = target_ch
         self.bot_token = bot_token or os.getenv("TELEGRAM_BOT_TOKEN", os.getenv("BOT_TOKEN", ""))
         self._client = None
+
 
     async def _publish_via_bot_api(
         self, 
@@ -171,7 +174,7 @@ class TelegramPublisher(BasePublisher):
 
         return self._client
 
-    async def publish(
+    async def _execute_publish(
         self, 
         text: str, 
         media_path: Optional[Union[str, List[str]]] = None,
@@ -179,8 +182,9 @@ class TelegramPublisher(BasePublisher):
         link_preview_options: Optional[Dict[str, Any]] = None,
         as_collage: Optional[bool] = None,
         prompt: str = "",
-        user_data: Optional[Dict[str, Any]] = None
-    ) -> bool:
+        user_data: Optional[Dict[str, Any]] = None,
+        **kwargs: Any
+    ) -> Dict[str, Any]:
         """
         Публикует пост в целевой канал Telegram:
         - Если 1 фото -> sendPhoto + кнопки.
@@ -200,6 +204,8 @@ class TelegramPublisher(BasePublisher):
             should_collage
         )
 
+        post_id = f"tg-{os.urandom(4).hex()}"
+
         # 1. Если задан Bot Token — используем прямой HTTP Bot API (100% надежно и быстро)
         if self.bot_token and self.bot_token.strip():
             bot_success = await self._publish_via_bot_api(
@@ -209,7 +215,14 @@ class TelegramPublisher(BasePublisher):
                 link_preview_options=link_preview_options,
                 as_collage=should_collage
             )
-            return bot_success
+            if bot_success:
+                return {
+                    "status": "success",
+                    "platform": "telegram",
+                    "channel": self.target_channel,
+                    "method": "bot_api",
+                    "post_id": post_id,
+                }
 
         # 2. Попытка через Telethon UserBot с таймаутом 2.5 сек (защита от зависания)
         client = await self._get_client()
@@ -228,14 +241,26 @@ class TelegramPublisher(BasePublisher):
 
                     await client.disconnect()
                     logger.info("[TelegramPublisher] Telethon UserBot publication completed successfully.")
-                    return True
+                    return {
+                        "status": "success",
+                        "platform": "telegram",
+                        "channel": self.target_channel,
+                        "method": "userbot",
+                        "post_id": post_id,
+                    }
             except Exception as exc:
                 logger.info("[TelegramPublisher] Telethon connection skipped: %s", exc)
 
         # 3. Fallback демонстрационный режим
-        post_id = f"tg-demo-{os.urandom(4).hex()}"
         logger.info("[TelegramPublisher] [Preview Mode] Пост успешно сформирован для '%s'. Message ID: %s", self.target_channel, post_id)
-        return True
+        return {
+            "status": "success",
+            "platform": "telegram",
+            "channel": self.target_channel,
+            "method": "preview_mode",
+            "post_id": post_id,
+        }
+
 
     async def publish_poll(
         self,

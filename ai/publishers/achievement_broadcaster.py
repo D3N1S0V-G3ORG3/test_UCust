@@ -25,8 +25,12 @@ try:
 except ImportError:
     TelegramClient = None
 
-class AchievementBroadcaster:
+from publishers.base import BasePublisher
+
+class AchievementBroadcaster(BasePublisher):
     DEFAULT_CHANNEL = "@testaipublisher"
+    platform_name = "telegram"
+
     @staticmethod
     def _normalize_channel(channel: str) -> str:
         if not channel:
@@ -42,13 +46,23 @@ class AchievementBroadcaster:
 
     def __init__(self, target_channel: Optional[str] = None):
         raw_ch = target_channel or os.getenv("UCUST_ACHIEVEMENT_CHANNEL") or self.DEFAULT_CHANNEL
-        self.target_channel = self._normalize_channel(raw_ch)
+        norm_ch = self._normalize_channel(raw_ch)
+        super().__init__(target_channel=norm_ch)
+        self.target_channel = norm_ch
         self.bot_token = os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("UCUST_TELEGRAM_BOT_TOKEN") or self.DEFAULT_BOT_TOKEN
         self.api_id = os.getenv("TELETHON_API_ID") or os.getenv("TELEGRAM_API_ID", "37805806")
         self.api_hash = os.getenv("TELETHON_API_HASH") or os.getenv("TELEGRAM_API_HASH", "3edb95f2db1a5bf4d67608d79db10bbf")
         
         # Находим файл сессии
         self.session_name = self._resolve_session_name()
+
+    async def _execute_publish(
+        self,
+        text: str,
+        media_path: Optional[str] = None,
+        **kwargs: Any
+    ) -> Dict[str, Any]:
+        return await self.publish_post_async(post_text=text, media_path=media_path, **kwargs)
 
     def _resolve_session_name(self) -> str:
         session_base = os.getenv("TELETHON_SESSION", "ucust_session").strip()
