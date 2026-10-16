@@ -1433,6 +1433,131 @@ async def get_rag_telemetry_endpoint():
     }
 
 
+# -------------------------------------------------------------------
+# Content Scheduler & Multi-Platform Publishing Endpoints
+# -------------------------------------------------------------------
+
+class GenerateGridRequest(BaseModel):
+    tenant_id: str = Field(..., example="sweet_bakery")
+    company_name: str = Field("Сладкая Выпечка", example="Сладкая Выпечка")
+    niche: str = Field("Пекарня и кондитерская", example="Пекарня и кондитерская")
+    days_count: int = Field(7, ge=1, le=30)
+    auto_schedule: bool = Field(True, description="Автоматически поставить слоты в очередь публикации")
+    platforms: Optional[List[str]] = Field(default_factory=lambda: ["telegram", "vk", "ok", "max"])
+
+
+class PublishNowRequest(BaseModel):
+    slot_id: str
+    target_channel: Optional[str] = None
+    platform: str = "telegram"
+    slot_data: Optional[Dict[str, Any]] = None
+
+
+# Реестр сгенерированных сеток тенантов
+_active_grids: Dict[str, Any] = {}
+
+
+@app.post("/api/v1/scheduler/generate-grid", tags=["Content Scheduler"])
+async def generate_content_grid(request: GenerateGridRequest):
+    """
+    Генерация недельного контент-плана на базе 4-слойного RAG:
+    - Стратифицированная выборка (Hard Facts, Brand DNA, Audience Priors)
+    - Матрица воронки Ханта (TOFU 40%, MOFU 40%, BOFU 20%)
+    - Мультиплатформенная адаптация (Telegram, VK, OK, Max)
+    - Постановка в очередь отложенной публикации через Celery (если auto_schedule=True)
+    """
+    from services.content_scheduler import ContentSchedulerService
+    from celery_tasks import enqueue_scheduled_slot_task
+
+    scheduler = ContentSchedulerService(platforms=request.platforms)
+    grid = await scheduler.generate_weekly_grid_async(
+        tenant_id=request.tenant_id,
+        company_name=request.company_name,
+        niche=request.niche,
+        days_count=request.days_count
+    )
+
+    _active_grids[request.tenant_id] = grid.model_dump()
+
+    scheduled_tasks: List[str] = []
+    if request.auto_schedule:
+        for slot in grid.slots:
+            if not slot.requires_approval:
+                enqueue_res = enqueue_scheduled_slot_task(
+                    tenant_id=request.tenant_id,
+                    slot_data=slot.model_dump(),
+                    publish_at_iso=slot.scheduled_time_iso
+                )
+                scheduled_tasks.append(enqueue_res["task_id"])
+
+    return {
+        "status": "success",
+        "grid_id": grid.grid_id,
+        "tenant_id": request.tenant_id,
+        "company_name": request.company_name,
+        "start_date": grid.start_date,
+        "end_date": grid.end_date,
+        "days_count": grid.days_count,
+        "slots_count": len(grid.slots),
+        "funnel_stats": grid.funnel_stats,
+        "drs_score": grid.drs_score,
+        "scheduled_tasks_count": len(scheduled_tasks),
+        "slots": [s.model_dump() for s in grid.slots]
+    }
+
+
+@app.get("/api/v1/scheduler/{tenant_id}/grid", tags=["Content Scheduler"])
+async def get_tenant_content_grid(tenant_id: str):
+    """
+    Получение активной сетки контент-плана для арендатора.
+    """
+    if tenant_id in _active_grids:
+        return {
+            "status": "success",
+            "tenant_id": tenant_id,
+            "grid": _active_grids[tenant_id]
+        }
+
+    from services.content_scheduler import ContentSchedulerService
+    scheduler = ContentSchedulerService()
+    grid = await scheduler.generate_weekly_grid_async(tenant_id=tenant_id)
+    _active_grids[tenant_id] = grid.model_dump()
+
+    return {
+        "status": "success",
+        "tenant_id": tenant_id,
+        "grid": _active_grids[tenant_id]
+    }
+
+
+@app.post("/api/v1/scheduler/{tenant_id}/publish-now", tags=["Content Scheduler"])
+async def publish_slot_now(tenant_id: str, request: PublishNowRequest):
+    """
+    Мгновенная ручная публикация выбранного слота контент-календаря.
+    """
+    from services.publishing_service import PublishingService
+
+    slot_data = request.slot_data or {}
+    text_to_publish = slot_data.get("base_text") or f"Пост #{request.slot_id} от {tenant_id}"
+    channel = request.target_channel or os.getenv("TELEGRAM_TARGET_CHANNEL", "@UcustAi")
+
+    pub_service = PublishingService()
+    pub_res = await pub_service.publish_post_content(
+        text=text_to_publish,
+        channel=channel,
+        company_name=tenant_id
+    )
+
+    return {
+        "status": "success",
+        "slot_id": request.slot_id,
+        "tenant_id": tenant_id,
+        "platform": request.platform,
+        "channel": channel,
+        "result": pub_res
+    }
+
+
 @app.post("/api/v1/ai/rag/ingest", tags=["Knowledge Base RAG"])
 async def ingest_knowledge_base(request: RAGIngestRequest):
     """

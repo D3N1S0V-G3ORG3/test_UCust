@@ -17,6 +17,7 @@ Production Environment (Multi-tier Priority Queues):
 from __future__ import annotations
 
 import os
+import uuid
 import asyncio
 import logging
 from datetime import datetime
@@ -85,6 +86,8 @@ if HAS_CELERY:
             "celery_tasks.process_trend_clusters_task": {"queue": QUEUE_TREND_MINING},
             "celery_tasks.collect_channel_telemetry_batch_task": {"queue": QUEUE_FEEDBACK},
             "celery_tasks.monitor_drs_and_trigger_interrogation_task": {"queue": QUEUE_FEEDBACK},
+            "celery_tasks.publish_scheduled_slot_task": {"queue": QUEUE_BUSINESS},
+            "celery_tasks.generate_weekly_grid_task": {"queue": QUEUE_BUSINESS},
             "celery_tasks.*": {"queue": QUEUE_BUSINESS},
         },
         beat_schedule={
@@ -837,6 +840,193 @@ def enqueue_drs_monitor_task(
         "queue": QUEUE_FEEDBACK,
         "timestamp": datetime.utcnow().isoformat(),
     }
+
+
+@celery_app.task(name="celery_tasks.generate_weekly_grid_task", bind=True)
+def generate_weekly_grid_task(
+    self,
+    tenant_id: str,
+    company_name: str = "UCust Client",
+    niche: str = "Услуги",
+    days_count: int = 7,
+    auto_schedule: bool = True
+) -> Dict[str, Any]:
+    """
+    Фоновая генерация недельного контент-плана на базе 4-слойного RAG:
+    Формирует сбалансированную сетку (TOFU/MOFU/BOFU) с адаптацией под каналы.
+    """
+    task_id = getattr(self.request, "id", f"grid_{uuid.uuid4().hex[:12]}")
+    logger.info(f"📅 [Celery:business] Генерация контент-сетки на {days_count} дней для {tenant_id} (Task ID: {task_id})")
+
+    from services.content_scheduler import ContentSchedulerService
+
+    scheduler = ContentSchedulerService()
+    grid = scheduler.generate_weekly_grid_sync(
+        tenant_id=tenant_id,
+        company_name=company_name,
+        niche=niche,
+        days_count=days_count
+    )
+
+    scheduled_tasks: List[str] = []
+    if auto_schedule:
+        for slot in grid.slots:
+            if not slot.requires_approval:
+                enqueue_res = enqueue_scheduled_slot_task(
+                    tenant_id=tenant_id,
+                    slot_data=slot.model_dump(),
+                    publish_at_iso=slot.scheduled_time_iso
+                )
+                scheduled_tasks.append(enqueue_res["task_id"])
+
+    return {
+        "status": "success",
+        "task_id": task_id,
+        "grid_id": grid.grid_id,
+        "tenant_id": tenant_id,
+        "days_count": days_count,
+        "slots_count": len(grid.slots),
+        "funnel_stats": grid.funnel_stats,
+        "drs_score": grid.drs_score,
+        "scheduled_tasks_count": len(scheduled_tasks),
+        "grid": grid.model_dump()
+    }
+
+
+@celery_app.task(name="celery_tasks.publish_scheduled_slot_task", bind=True)
+def publish_scheduled_slot_task(
+    self,
+    tenant_id: str,
+    slot_data: Dict[str, Any],
+    target_channel: Optional[str] = None,
+    platform: str = "telegram"
+) -> Dict[str, Any]:
+    """
+    Фоновая публикация отдельного слота контент-календаря в социальный канал:
+    Проверяет согласование акций (Human-in-the-Loop) и форматирует пост под платформу.
+    """
+    task_id = getattr(self.request, "id", f"pub_{uuid.uuid4().hex[:12]}")
+    slot_id = slot_data.get("slot_id", "unknown_slot")
+    logger.info(f"🚀 [Celery:business] Публикация слота {slot_id} для {tenant_id} (Task ID: {task_id})")
+
+    # Проверка шлюза безопасности (Human-in-the-Loop)
+    if slot_data.get("requires_approval") and slot_data.get("status") == "pending_approval":
+        logger.warning(f"🔒 [Celery:business] Слот {slot_id} требует подтверждения владельца. Публикация отложена.")
+        return {
+            "status": "pending_approval",
+            "task_id": task_id,
+            "slot_id": slot_id,
+            "tenant_id": tenant_id,
+            "reason": "Требуется подтверждение акции владельцем бизнеса (DRS < 40)"
+        }
+
+    from services.publishing_service import PublishingService
+
+    drafts = slot_data.get("platform_drafts", {})
+    text_to_publish = (
+        drafts.get(platform, {}).get("text")
+        or slot_data.get("base_text")
+        or slot_data.get("topic", "")
+    )
+
+    channel = target_channel or os.getenv("TELEGRAM_TARGET_CHANNEL", "@UcustAi")
+
+    async def _async_pub():
+        pub_service = PublishingService()
+        return await pub_service.publish_post_content(
+            text=text_to_publish,
+            channel=channel,
+            company_name=slot_data.get("tenant_id", "UCust Client")
+        )
+
+    res = _run_async(_async_pub())
+    return {
+        "status": "published",
+        "task_id": task_id,
+        "slot_id": slot_id,
+        "tenant_id": tenant_id,
+        "platform": platform,
+        "channel": channel,
+        "publication_result": res
+    }
+
+
+def enqueue_weekly_grid_task(
+    tenant_id: str,
+    company_name: str = "UCust Client",
+    niche: str = "Услуги",
+    days_count: int = 7,
+    auto_schedule: bool = True
+) -> Dict[str, Any]:
+    """Постановка задачи генерации недельной сетки в очередь Celery."""
+    if HAS_CELERY and hasattr(generate_weekly_grid_task, "apply_async"):
+        async_result = generate_weekly_grid_task.apply_async(
+            kwargs={
+                "tenant_id": tenant_id,
+                "company_name": company_name,
+                "niche": niche,
+                "days_count": days_count,
+                "auto_schedule": auto_schedule,
+            },
+            queue=QUEUE_BUSINESS,
+        )
+        task_id = async_result.id
+    else:
+        import uuid
+        task_id = f"mock_grid_{uuid.uuid4().hex[:12]}"
+
+    return {
+        "status": "QUEUED",
+        "task_id": task_id,
+        "queue": QUEUE_BUSINESS,
+        "tenant_id": tenant_id,
+        "timestamp": datetime.utcnow().isoformat(),
+    }
+
+
+def enqueue_scheduled_slot_task(
+    tenant_id: str,
+    slot_data: Dict[str, Any],
+    publish_at_iso: Optional[str] = None,
+    target_channel: Optional[str] = None,
+    platform: str = "telegram"
+) -> Dict[str, Any]:
+    """Постановка задачи публикации слота в очередь Celery с опциональным расчетом ETA."""
+    eta = None
+    if publish_at_iso:
+        try:
+            dt = datetime.fromisoformat(publish_at_iso)
+            # Если время в будущем, задаем ETA
+            if dt > datetime.now(timezone.utc).replace(tzinfo=None) if dt.tzinfo is None else dt > datetime.now(timezone.utc):
+                eta = dt
+        except Exception:
+            pass
+
+    if HAS_CELERY and hasattr(publish_scheduled_slot_task, "apply_async"):
+        async_result = publish_scheduled_slot_task.apply_async(
+            kwargs={
+                "tenant_id": tenant_id,
+                "slot_data": slot_data,
+                "target_channel": target_channel,
+                "platform": platform,
+            },
+            eta=eta,
+            queue=QUEUE_BUSINESS,
+        )
+        task_id = async_result.id
+    else:
+        import uuid
+        task_id = f"mock_slot_{uuid.uuid4().hex[:12]}"
+
+    return {
+        "status": "QUEUED",
+        "task_id": task_id,
+        "queue": QUEUE_BUSINESS,
+        "slot_id": slot_data.get("slot_id"),
+        "eta": eta.isoformat() if eta else None,
+        "timestamp": datetime.utcnow().isoformat(),
+    }
+
 
 
 
