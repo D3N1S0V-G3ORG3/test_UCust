@@ -377,7 +377,7 @@ class HybridRetriever:
                 self._query_cache.clear()
                 return
             tid = tenant_id.strip().lower()
-            keys_to_delete = [k for k in self._query_cache if k.startswith(f"{tid}:")]
+            keys_to_delete = [k for k in list(self._query_cache.keys()) if k.startswith(f"{tid}:")]
             for k in keys_to_delete:
                 self._query_cache.pop(k, None)
 
