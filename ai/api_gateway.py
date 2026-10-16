@@ -1415,6 +1415,24 @@ async def query_knowledge_base(request: RAGQueryRequest):
     }
 
 
+@app.get("/api/v1/admin/rag/telemetry", tags=["Knowledge Base RAG", "Admin Observability"])
+async def get_rag_telemetry_endpoint():
+    """
+    Выгрузка сводки телеметрии RAG для дашборда администратора и Grafana:
+    - DRS Health (средний балл полноты фактуры)
+    - Fallback Rate (частота применения Safe CTA из-за нехватки цен)
+    - Truncation Rate (частота динамического усечения контекстного окна)
+    - Разрез усечений по слоям (audience_priors, brand_dna, episodic_memory)
+    - Список клиентов в зоне риска переполнения окна (Tenants at Risk)
+    """
+    from analytics.rag_telemetry import RAGTelemetryTracker
+    return {
+        "status": "success",
+        "timestamp": datetime.utcnow().isoformat(),
+        "telemetry": RAGTelemetryTracker.get_instance().get_summary().model_dump()
+    }
+
+
 @app.post("/api/v1/ai/rag/ingest", tags=["Knowledge Base RAG"])
 async def ingest_knowledge_base(request: RAGIngestRequest):
     """
