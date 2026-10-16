@@ -296,6 +296,16 @@ class MoondreamVQASkill:
                     logger.error(f"[Moondream] Ошибка декодирования DataURL: {e}")
                     return None
 
+            if image_str.startswith(("http://", "https://")):
+                try:
+                    import urllib.request
+                    req = urllib.request.Request(image_str, headers={"User-Agent": "Mozilla/5.0"})
+                    with urllib.request.urlopen(req, timeout=5.0) as resp:
+                        return Image.open(io.BytesIO(resp.read())).convert("RGB")
+                except Exception as e:
+                    logger.debug(f"[Moondream] Не удалось загрузить фото по URL {image_str}: {e}")
+                    return None
+
             if os.path.exists(image_str):
                 try:
                     return Image.open(image_str).convert("RGB")
