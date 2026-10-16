@@ -196,10 +196,13 @@ class BrandService:
         if site_data and isinstance(site_data, dict):
             discovered_vk = site_data.get("social_links", {}).get("vk", [])
             if discovered_vk:
+                raw_vk = discovered_vk[0]
+                clean_group_id = re.sub(r'^https?://(?:vk\.com|vk\.ru|vk\.me|m\.vk\.com)/', '', raw_vk).strip('/')
+                logger.info(f"[BrandService] 🔗 Авто-чейн: найдена группа VK на сайте: {clean_group_id}. Запуск VKCollector...")
                 try:
-                    from collectors.vk_collector import VKCollector
-                    vk_collector = VKCollector()
-                    vk_res = await vk_collector.collect_group_async(group_id_or_url=discovered_vk[0], limit=10)
+                    from collectors.vk_collector import VkApiCollector
+                    vk_collector = VkApiCollector()
+                    vk_res = await vk_collector.collect_group_async(group_id_or_url=clean_group_id or raw_vk, limit=10)
                     vk_data = vk_res.get("data", vk_res)
                 except Exception as vk_err:
                     logger.warning(f"[BrandService] Ошибка авто-сбора VK: {vk_err}")

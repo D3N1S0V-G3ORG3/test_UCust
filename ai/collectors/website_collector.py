@@ -431,13 +431,13 @@ class WebsiteCollector:
         for link in parser.links:
             if 't.me/' in link or 'telegram.me/' in link:
                 social_profiles['telegram'].append(link)
-            elif 'vk.com/' in link:
+            elif 'vk.com/' in link or 'vk.ru/' in link or 'vk.me/' in link or 'm.vk.com/' in link:
                 social_profiles['vk'].append(link)
             elif 'ok.ru/' in link or 'odnoklassniki.ru/' in link:
                 social_profiles['ok'].append(link)
             elif 'wa.me/' in link or 'whatsapp.com' in link:
                 social_profiles['whatsapp'].append(link)
-            elif 'youtube.com' in link:
+            elif 'youtube.com' in link or 'youtu.be/' in link:
                 social_profiles['youtube'].append(link)
             elif 'instagram.com' in link:
                 social_profiles['instagram'].append(link)
@@ -450,7 +450,7 @@ class WebsiteCollector:
                 social_profiles['telegram'].append(tg)
         for max_l in re.findall(r'https?://max\.ru/[a-zA-Z0-9_\-+]+', html_content):
             social_profiles['max'].append(max_l)
-        for vk_l in re.findall(r'https?://vk\.com/[a-zA-Z0-9_\-+.]+', html_content):
+        for vk_l in re.findall(r'https?://(?:vk\.com|vk\.ru|vk\.me|m\.vk\.com)/[a-zA-Z0-9_\-+.]+', html_content):
             if not any(excl in vk_l.lower() for excl in ['share.php', 'widget']):
                 social_profiles['vk'].append(vk_l)
 
