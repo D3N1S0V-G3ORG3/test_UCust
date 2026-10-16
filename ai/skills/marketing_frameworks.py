@@ -298,16 +298,40 @@ class FoggCTAGenerator:
     }
 
     @classmethod
+    def get_default_keyword_for_niche(cls, niche: str) -> str:
+        """Подбирает органичный и релевантный ключевик для Fogg CTA в зависимости от сферы бизнеса."""
+        niche_l = (niche or "").lower()
+        if any(w in niche_l for w in ["кофе", "coffee", "кафе", "общепит", "ресторан", "пекарн", "еда", "бургер", "бар", "напит", "f&b"]):
+            return "МЕНЮ"
+        elif any(w in niche_l for w in ["мебель", "ремонт", "интерьер", "строитель", "стройка", "кухн", "шкаф"]):
+            return "РАСЧЕТ"
+        elif any(w in niche_l for w in ["авто", "сто", "детейлинг", "сервис", "шиномонтаж", "гонк", "автоспорт", "rds"]):
+            return "ЗАПИСЬ"
+        elif any(w in niche_l for w in ["бьюти", "салон", "маникюр", "парикмахер", "барбер", "клиник", "spa", "спа", "космет"]):
+            return "ВИЗИТ"
+        elif any(w in niche_l for w in ["курс", "школ", "обучен", "вебинар", "edtech", "репетитор", "урок"]):
+            return "ГАЙД"
+        elif any(w in niche_l for w in ["фитнес", "спорт", "тренировк", "зал", "йог"]):
+            return "ТРЕНИРОВКА"
+        elif any(w in niche_l for w in ["недвижим", "риелтор", "квартир", "аренд"]):
+            return "КАТАЛОГ"
+        elif any(w in niche_l for w in ["одежд", "обувь", "шоурум", "бутик", "магазин"]):
+            return "ПРИМЕРКА"
+        return "ПОДРОБНЕЕ"
+
+    @classmethod
     def generate_low_friction_cta(
         cls,
         action_type: str = "direct_keyword",
-        keyword: str = "РАСЧЕТ",
-        company_name: str = ""
+        keyword: Optional[str] = None,
+        company_name: str = "",
+        niche: str = ""
     ) -> str:
         """Генерирует призыв к действию с минимальным порогом входа."""
         presets = cls.CTA_PRESETS.get(action_type, cls.CTA_PRESETS["direct_keyword"])
         template = random.choice(presets)
-        return template.format(keyword=keyword, company_name=company_name)
+        kw = keyword or cls.get_default_keyword_for_niche(niche)
+        return template.format(keyword=kw, company_name=company_name)
 
 
 # ============================================================================
@@ -444,9 +468,9 @@ class MarketingFrameworkDirector:
         company_name: str,
         niche: str,
         topic: str,
-        framework: MarketingFramework,
-        hunt_stage: HuntStage,
-        trigger: PsychologicalTrigger,
+        framework: MarketingFramework = MarketingFramework.AIDA,
+        hunt_stage: HuntStage = HuntStage.STAGE_2_PROBLEM_AWARE,
+        trigger: Optional[PsychologicalTrigger] = None,
         pain_points: Optional[List[str]] = None,
         contacts: Optional[Dict[str, Any]] = None,
         raw_feature: str = ""
@@ -476,10 +500,12 @@ class MarketingFrameworkDirector:
         tier_offer = value_ladder.get(tier, "Основное предложение")
 
         # 4. Fogg Low-Friction CTA
+        default_kw = FoggCTAGenerator.get_default_keyword_for_niche(niche)
         low_friction_cta = FoggCTAGenerator.generate_low_friction_cta(
             action_type="direct_keyword",
-            keyword="РАСЧЕТ" if any(w in niche.lower() for w in ["мебель", "ремонт", "стройка", "кухн"]) else "КОНСУЛЬТАЦИЯ",
-            company_name=company_name
+            keyword=default_kw,
+            company_name=company_name,
+            niche=niche
         )
 
         pains_str = ", ".join(pain_points) if pain_points else "страх переплаты и сомнения в качестве"
@@ -502,7 +528,8 @@ class MarketingFrameworkDirector:
         prompt_instructions = (
             f"=== СТРОГАЯ МАРКЕТИНГОВАЯ ДИРЕКТИВА ДЛЯ ТЕКСТА ===\n"
             f"1. Структура текста: Формула {fw_info['name']}.\n"
-            f"   Обязательные блоки:\n" + "\n".join(f"   • {b}" for b in fw_info['blocks']) + "\n"
+            f"   Обязательные смысловые блоки:\n" + "\n".join(f"   • {b}" for b in fw_info['blocks']) + "\n"
+            f"   КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО писать в тексте служебные названия шагов и заголовков блоков ('Проблема:', 'Агонизация:', 'Решение:', 'Боль:', 'Усиление:', 'Картина:', 'Обещание:', 'Характеристика:', 'Выгода:')! Пост должен читаться как связная, цельная история без технических маркеров формулы.\n"
             f"2. Психологическая ступень воронки Ханта: {hunt_stage.value.upper()} ({stage_strategy['vibe']}).\n"
             f"3. JTBD-фокус (Jobs-to-be-Done):\n"
             f"   {jtbd['jtbd_summary_prompt']}\n"
@@ -553,8 +580,8 @@ class MarketingFrameworkDirector:
         jtbd = JTBDTransformer.transform_feature(niche, raw_feature)
         fogg_cta = FoggCTAGenerator.generate_low_friction_cta(
             action_type="direct_keyword",
-            keyword="РАСЧЕТ" if "мебель" in niche.lower() else "КОНСУЛЬТАЦИЯ",
-            company_name=company_name
+            company_name=company_name,
+            niche=niche
         )
 
         lead = ""
@@ -564,37 +591,37 @@ class MarketingFrameworkDirector:
         if framework == MarketingFramework.AIDA:
             lead = f"🔥 «{topic}» — как получить максимум результата в {niche}?"
             body = (
-                f"Интересный факт: 8 из 10 клиентов сталкиваются с тем, что результат не оправдывает ожиданий из-за скрытых компромиссов в качестве.\n\n"
+                f"8 из 10 клиентов сталкиваются с тем, что результат не оправдывает ожиданий из-за скрытых компромиссов в качестве.\n\n"
                 f"В «{company_name}» мы смотрим на задачу иначе: {jtbd['functional_job']} Вы получаете {jtbd['emotional_job']}\n\n"
                 f"{t_text}"
             )
 
-        # 2. PAS (Боль -> Усиление -> Решение)
+        # 2. PAS (Боль -> Усиление -> Решение без служебных маркеров)
         elif framework == MarketingFramework.PAS:
             lead = f"⚠️ Почему 90% попыток сэкономить на услугах в сфере {niche} заканчиваются переплатой в 2 раза?"
             body = (
-                f"Проблема: вы заказываете услугу, надеясь на быстрый результат, но получаете срыв сроков, переделки и скрытые доплаты.\n\n"
-                f"Чем дольше тянуть с исправлением, тем выше итоговые затраты и потерянные нервы.\n\n"
-                f"Решение от «{company_name}»: {jtbd['functional_job']} и {jtbd['emotional_job']}. {t_text}"
+                f"Вы заказываете услугу, надеясь на быстрый результат, но в итоге сталкиваетесь со скрытыми переделками и сорванными сроками.\n\n"
+                f"Чем дольше откладывать решение, тем выше итоговые затраты и потерянные нервы.\n\n"
+                f"С «{company_name}» вы получаете надежный результат: {jtbd['functional_job']} и {jtbd['emotional_job']}. {t_text}"
             )
 
         # 3. BAB (Before -> After -> Bridge)
         elif framework == MarketingFramework.BAB:
             lead = f"🔄 До и После: реальная трансформация с «{company_name}»"
             body = (
-                f"❌ ДО: долгий поиск надежных исполнителей, сомнения в качестве и постоянный стресс из-за дедлайнов.\n\n"
-                f"✅ ПОСЛЕ: {jtbd['emotional_job']} и {jtbd['social_job']}\n\n"
-                f"🌉 МОСТ: наш авторский подход и строгий контроль качества помогли закрыть эту задачу под ключ. {t_text}"
+                f"Раньше: долгий поиск надежных исполнителей, сомнения в качестве и постоянный стресс из-за дедлайнов.\n\n"
+                f"Сейчас: {jtbd['emotional_job']} и {jtbd['social_job']}\n\n"
+                f"Наш авторский подход и строгий контроль качества помогли закрыть эту задачу под ключ. {t_text}"
             )
 
         # 4. 4P (Picture -> Promise -> Prove -> Push)
         elif framework == MarketingFramework.FOUR_P:
             lead = f"✨ Представьте: ваш проект в сфере {niche} реализован безупречно с первого раза"
             body = (
-                f"Картина: вы получаете {jtbd['emotional_job']}.\n\n"
-                f"Обещание «{company_name}»: {jtbd['functional_job']}\n\n"
-                f"Доказательства: {t_text}\n\n"
-                f"Дедлайн: бронирование льготных условий открыто только до воскресенья!"
+                f"Вы получаете {jtbd['emotional_job']}.\n\n"
+                f"Мы в «{company_name}» гарантируем: {jtbd['functional_job']}\n\n"
+                f"{t_text}\n\n"
+                f"Специальные условия действуют только до конца недели!"
             )
 
         # 5. StoryBrand (Клиент - Герой, Бренд - Проводник)
@@ -622,9 +649,9 @@ class MarketingFrameworkDirector:
         else:
             lead = f"💎 В чем секрет качества «{company_name}»? Разбор на пальцах"
             body = (
-                f"Характеристика (Feature): мы используем только оригинальные сертифицированные материалы и технологии.\n\n"
-                f"Преимущество (Advantage): {jtbd['functional_job']}\n\n"
-                f"Выгода для вас (Benefit): {jtbd['emotional_job']} и {jtbd['social_job']}\n\n"
+                f"Мы используем только оригинальные сертифицированные материалы и технологии.\n\n"
+                f"Благодаря этому: {jtbd['functional_job']}\n\n"
+                f"В итоге вы получаете: {jtbd['emotional_job']} и {jtbd['social_job']}\n\n"
                 f"{t_text}"
             )
 
@@ -640,9 +667,14 @@ class MarketingFrameworkDirector:
             company_name=company_name
         )
 
-        # Строгая защита от утечек названий моделей
+        # Строгая защита от утечек названий моделей и очистка формул
         from skills.tech_sanitizer import TechSanitizer
         sanitized_post = TechSanitizer.sanitize_text(full_post)
+        try:
+            from skills.saiga_llm import SaigaLLMSkill
+            sanitized_post = SaigaLLMSkill._sanitize_llm_post(sanitized_post, company_name=company_name, niche=niche)
+        except Exception:
+            pass
 
         return {
             "status": "success",

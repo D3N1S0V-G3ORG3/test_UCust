@@ -354,6 +354,9 @@ class CampaignService:
             if not line.strip().startswith("#") and not line.strip().startswith("🏷️ Хэштеги")
         ]).strip()
 
+        # Финальная санитарная обработка (удаление каркасов PAS/AIDA, нормализация брендов, буллетов и CTA)
+        clean_user_post_text = SaigaLLMSkill._sanitize_llm_post(clean_user_post_text, company_name=company_name, niche=niche)
+
         # Форматирование для Telegram (Rich Post Formatter)
         from skills.telegram_rich_formatter import TelegramRichPostFormatter
         rich_tg = TelegramRichPostFormatter.build_rich_telegram_post(
