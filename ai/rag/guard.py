@@ -2,10 +2,10 @@
 4. Context Injection & Anti-Hallucination Guard
 Форматирование найденных чанков с метаданными и пороговая фильтрация (score >= 0.55).
 Защита генеративной модели от галлюцинаций с поддержкой 4-слойной стратификации знаний:
-1. Hard Ground Truth (hard_fact) - Жесткие факты (цены, составы, сроки)
-2. Brand DNA & Redpolicy (brand_dna) - ToV, эталоны, правила платформ
-3. Audience Priors (audience_priors) - Боли, триггеры, FAQ
-4. Episodic Memory (episodic_memory) - Свежие директивы владельца
+1. Hard Ground Truth (hard_fact) - Жесткие факты (цены, составы, сроки) [Tier 1: 100% квота, никогда не обрезается]
+2. Episodic Memory (episodic_memory) - Свежие директивы владельца [Tier 2: Top-3 LIFO директивы]
+3. Brand DNA & Redpolicy (brand_dna) - ToV, эталоны, правила платформ [Tier 3: Бюджетируемый слой]
+4. Audience Priors (audience_priors) - Боли, триггеры, FAQ [Tier 4: Эластичный деградируемый слой]
 """
 
 import sys
@@ -15,8 +15,11 @@ if hasattr(sys.stdout, 'reconfigure'):
     except Exception:
         pass
 
+import logging
 from typing import List, Dict, Optional, Any
 from rag.models import RetrievalResult, RAGContext, Chunk, DocCategoryEnum, TrustTierEnum, PlatformTargetEnum
+
+logger = logging.getLogger("AntiHallucinationGuard")
 
 
 class AntiHallucinationGuard:
@@ -25,7 +28,8 @@ class AntiHallucinationGuard:
     1. Проверяет релевантность найденных данных по порогу (score threshold).
     2. Стратифицирует найденные чанки по 4 фундаментальным слоям базы знаний.
     3. Упаковывает чанки с прозрачными метаданными (источник, дата, скор, доверие, платформа).
-    4. Запрещает генеративной модели придумывать факты, если в Hard Ground Truth слое нет ответа.
+    4. Предотвращает Token Overflow через механизм умной деградации (Dynamic Priority-Budget Truncation).
+    5. Запрещает генеративной модели придумывать факты, если в Hard Ground Truth слое нет ответа.
     """
 
     LAYER_TITLES = {
@@ -46,8 +50,22 @@ class AntiHallucinationGuard:
         "4. EPISODIC MEMORY: Свежие директивы и корректировки владельца. Имеют НАИВЫСШИЙ приоритет и переопределяют общие шаблоны."
     )
 
-    def __init__(self, min_confidence_threshold: float = 0.55):
+    def __init__(
+        self,
+        min_confidence_threshold: float = 0.55,
+        max_context_tokens: int = 1500,
+        max_episodic_directives: int = 3
+    ):
         self.min_confidence_threshold = min_confidence_threshold
+        self.max_context_tokens = max_context_tokens
+        self.max_episodic_directives = max_episodic_directives
+
+    @staticmethod
+    def _estimate_tokens(text: str) -> int:
+        """Быстрая эвристика BPE токенов для русско-английских текстов (~1.3 токена на слово)."""
+        if not text:
+            return 0
+        return max(1, int(len(text.split()) * 1.3))
 
     @staticmethod
     def _normalize_category(chunk: Chunk) -> str:
@@ -64,7 +82,7 @@ class AntiHallucinationGuard:
 
     def format_and_guard(self, query: str, results: List[RetrievalResult]) -> RAGContext:
         """
-        Форматирует стратифицированный контекст и применяет Guardrail защиты от галлюцинаций.
+        Форматирует стратифицированный контекст с применением Dynamic Priority-Budget Truncation.
         """
         if not results:
             return RAGContext(
@@ -79,7 +97,10 @@ class AntiHallucinationGuard:
                     DocCategoryEnum.BRAND_DNA.value: [],
                     DocCategoryEnum.AUDIENCE_PRIORS.value: [],
                     DocCategoryEnum.EPISODIC_MEMORY.value: [],
-                }
+                },
+                total_tokens=0,
+                is_truncated=False,
+                truncated_layers=[]
             )
 
         top_score = max((r.rerank_score for r in results), default=0.0)
@@ -101,7 +122,10 @@ class AntiHallucinationGuard:
                     DocCategoryEnum.BRAND_DNA.value: [],
                     DocCategoryEnum.AUDIENCE_PRIORS.value: [],
                     DocCategoryEnum.EPISODIC_MEMORY.value: [],
-                }
+                },
+                total_tokens=0,
+                is_truncated=False,
+                truncated_layers=[]
             )
 
         # 1. Группировка чанков по 4 слоям
@@ -117,13 +141,63 @@ class AntiHallucinationGuard:
             cat = self._normalize_category(res.chunk)
             layer_groups[cat].append(res)
 
-        # Сортируем эпизодическую память по дате (свежие директивы первыми)
-        layer_groups[DocCategoryEnum.EPISODIC_MEMORY.value].sort(
-            key=lambda r: r.chunk.created_at,
-            reverse=True
-        )
+        # 2. Темпоральная приоритизация Episodic Memory (LIFO)
+        truncated_layers: List[str] = []
+        episodic_items = layer_groups[DocCategoryEnum.EPISODIC_MEMORY.value]
+        episodic_items.sort(key=lambda r: r.chunk.created_at, reverse=True)
 
-        # 2. Формирование структурированного текстового контекста
+        if len(episodic_items) > self.max_episodic_directives:
+            truncated_layers.append(DocCategoryEnum.EPISODIC_MEMORY.value)
+            layer_groups[DocCategoryEnum.EPISODIC_MEMORY.value] = episodic_items[:self.max_episodic_directives]
+
+        # 3. Dynamic Priority-Budget Truncation (Умная деградация контекста)
+        # Бюджет распределяется строго по иерархии:
+        # Tier 1 (hard_fact): 100% неприкосновенная квота
+        # Tier 2 (episodic_memory): Top-N директивы
+        # Tier 3 (brand_dna): Редполитика укладывается в доступный остаток
+        # Tier 4 (audience_priors): Эластичный слой, деградирует/обрезается первым при переполнении
+        
+        header_tokens = self._estimate_tokens(self.LAYER_DIRECTIVES)
+        hard_items = layer_groups[DocCategoryEnum.HARD_FACT.value]
+        hard_tokens = sum(self._estimate_tokens(r.chunk.text) for r in hard_items)
+        episodic_tokens = sum(self._estimate_tokens(r.chunk.text) for r in layer_groups[DocCategoryEnum.EPISODIC_MEMORY.value])
+
+        current_base_tokens = header_tokens + hard_tokens + episodic_tokens
+        remaining_budget = max(0, self.max_context_tokens - current_base_tokens)
+
+        # Выделяем до 60% остатка на Brand DNA
+        dna_budget = int(remaining_budget * 0.65) if remaining_budget > 0 else 0
+        dna_items = layer_groups[DocCategoryEnum.BRAND_DNA.value]
+        kept_dna: List[RetrievalResult] = []
+        current_dna_tokens = 0
+        for r in dna_items:
+            t = self._estimate_tokens(r.chunk.text)
+            if current_dna_tokens + t <= dna_budget or not kept_dna:
+                kept_dna.append(r)
+                current_dna_tokens += t
+            else:
+                if DocCategoryEnum.BRAND_DNA.value not in truncated_layers:
+                    truncated_layers.append(DocCategoryEnum.BRAND_DNA.value)
+
+        layer_groups[DocCategoryEnum.BRAND_DNA.value] = kept_dna
+
+        # Оставшийся бюджет отдаем Audience Priors и General
+        audience_budget = max(0, remaining_budget - current_dna_tokens)
+        audience_items = layer_groups[DocCategoryEnum.AUDIENCE_PRIORS.value]
+        kept_audience: List[RetrievalResult] = []
+        current_audience_tokens = 0
+        for r in audience_items:
+            t = self._estimate_tokens(r.chunk.text)
+            if current_audience_tokens + t <= audience_budget:
+                kept_audience.append(r)
+                current_audience_tokens += t
+            else:
+                if DocCategoryEnum.AUDIENCE_PRIORS.value not in truncated_layers:
+                    truncated_layers.append(DocCategoryEnum.AUDIENCE_PRIORS.value)
+
+        layer_groups[DocCategoryEnum.AUDIENCE_PRIORS.value] = kept_audience
+
+        # 4. Формирование структурированного текстового контекста
         has_any_stratified = any(
             len(layer_groups[k]) > 0 for k in [
                 DocCategoryEnum.HARD_FACT.value,
@@ -146,6 +220,8 @@ class AntiHallucinationGuard:
         ]
 
         total_idx = 1
+        final_chunks: List[Chunk] = []
+
         for layer_key in ordered_layers:
             items = layer_groups[layer_key]
             if not items:
@@ -155,6 +231,7 @@ class AntiHallucinationGuard:
             chunk_blocks = []
             for res in items:
                 chunk = res.chunk
+                final_chunks.append(chunk)
                 source = chunk.source or "unknown"
                 date_str = chunk.created_at[:10] if chunk.created_at else "recent"
                 trust = chunk.metadata.get("trust_tier") or "verified_automated"
@@ -170,6 +247,7 @@ class AntiHallucinationGuard:
             context_sections.append(section_header + "\n" + "\n\n".join(chunk_blocks))
 
         formatted_context_str = "\n\n" + ("\n\n" + "-" * 40 + "\n\n").join(context_sections)
+        total_tokens = self._estimate_tokens(formatted_context_str)
 
         stratified_dict = {
             DocCategoryEnum.HARD_FACT.value: [r.chunk for r in layer_groups[DocCategoryEnum.HARD_FACT.value]],
@@ -181,9 +259,12 @@ class AntiHallucinationGuard:
         return RAGContext(
             query=query,
             formatted_context=formatted_context_str.strip(),
-            chunks=[r.chunk for r in results],
+            chunks=final_chunks,
             top_score=top_score,
             has_sufficient_context=True,
             fallback_message=None,
-            stratified_layers=stratified_dict
+            stratified_layers=stratified_dict,
+            total_tokens=total_tokens,
+            is_truncated=bool(truncated_layers),
+            truncated_layers=truncated_layers
         )

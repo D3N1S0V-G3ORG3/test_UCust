@@ -90,6 +90,9 @@ class RAGContext:
     has_sufficient_context: bool
     fallback_message: Optional[str] = None
     stratified_layers: Optional[Dict[str, List[Chunk]]] = None
+    total_tokens: int = 0
+    is_truncated: bool = False
+    truncated_layers: List[str] = field(default_factory=list)
 
     def get_layer(self, layer_name: str) -> List[Chunk]:
         """Возвращает чанки указанного слоя (hard_fact, brand_dna, audience_priors, episodic_memory)."""

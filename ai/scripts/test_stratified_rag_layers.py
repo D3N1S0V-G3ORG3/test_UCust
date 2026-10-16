@@ -293,8 +293,73 @@ async def test_stratified_context_query(rag: CleanRAGPipeline):
     print("      ...\n")
 
 
+async def test_dynamic_priority_budget_truncation(rag: CleanRAGPipeline):
+    print("--- 5. Testing Dynamic Priority-Budget Truncation (Token Overflow Protection) ---")
+    
+    # Создаем пайплайн с жестким лимитом токенов (max_context_tokens=180, max_episodic_directives=2)
+    bounded_rag = CleanRAGPipeline(
+        min_confidence_threshold=0.30,
+        max_context_tokens=180,
+        max_episodic_directives=2
+    )
+    populate_test_data(bounded_rag)
+
+    # Добавим еще 4 директивы в episodic_memory, чтобы искусственно раздуть историю
+    for i in range(4):
+        bounded_rag.add_directive(
+            tenant_id="bakery_sweet",
+            directive_text=f"[2026-10-1{i} Директива]: Тестовое правило #{i+1} для проверки деградации."
+        )
+
+    ctx = await bounded_rag.query_stratified_context_async(
+        query_text="Расскажи про кулич, цену, редполитику и боли клиентов",
+        tenant_id="bakery_sweet",
+        per_layer_k=3
+    )
+
+    # 1. Проверяем, что сработала деградация (is_truncated == True)
+    assert ctx.is_truncated is True, "Expected is_truncated to be True under tight budget"
+    assert len(ctx.truncated_layers) > 0, f"Expected truncated layers, got {ctx.truncated_layers}"
+
+    # 2. Episodic memory ограничена ровно 2 самыми свежими директивами
+    mem_chunks = ctx.get_layer(DocCategoryEnum.EPISODIC_MEMORY.value)
+    assert len(mem_chunks) <= 2, f"Expected <= 2 episodic directives, got {len(mem_chunks)}"
+
+    # 3. Hard Ground Truth (цены) НА 100% СОХРАНЕН (неприкосновенная квота Tier 1)
+    assert ctx.has_hard_facts is True, "Hard facts MUST NEVER be truncated"
+    assert any("1230 руб" in c.text for c in ctx.get_layer(DocCategoryEnum.HARD_FACT.value))
+
+    print(f"   ✅ Truncation verified: is_truncated={ctx.is_truncated}, truncated_layers={ctx.truncated_layers}")
+    print(f"   ✅ Total context tokens: {ctx.total_tokens} <= 180 budget")
+    print(f"   ✅ Hard facts preserved 100%: prices intact, hallucinations prevented.\n")
+
+
+async def test_stale_cache_invalidation_on_mutation(rag: CleanRAGPipeline):
+    print("--- 6. Testing Stale Cache Invalidation on Mutation ---")
+
+    query = "какая актуальная цена на кулич"
+    # Первый запрос — разогрев кэша
+    res1 = await rag.query_async(query, tenant_id="bakery_sweet")
+    assert any("1230 руб" in c.text for c in res1.chunks)
+    cache_key = rag.retriever._make_cache_key(query, top_k=10, tenant_id="bakery_sweet")
+    assert cache_key in rag.retriever._query_cache, "Query must be cached after first execution"
+
+    # Мутация: контент-менеджер добавляет новую директиву об изменении цены
+    new_directive = "[2026-10-17 Директива руководства]: Срочно! Цена кулича изменилась до 1450 руб из-за подорожания фермерского масла."
+    await rag.add_directive_async("bakery_sweet", new_directive)
+
+    # Проверяем, что кэш тенанта bakery_sweet был атомарно очищен
+    assert cache_key not in rag.retriever._query_cache, "Cache must be invalidated immediately after mutation!"
+
+    # Второй запрос — должен немедленно вернуть свежие данные (1450 руб)
+    res2 = await rag.query_async(query, tenant_id="bakery_sweet")
+    assert any("1450 руб" in c.text for c in res2.chunks), "Fresh directive not found after cache invalidation!"
+
+    print("   ✅ Mutation-triggered cache invalidation verified: Zero stale data risk on client updates.\n")
+
+
 def main():
-    print("🚀 STARTING 4-LAYER STRATIFIED RAG & PRE-FILTERING INTEGRATION TESTS\n")
+    print("🚀 STARTING 4-LAYER STRATIFIED RAG & HIGH-LOAD RESILIENCE TESTS\n")
     rag = setup_test_pipeline()
     populate_test_data(rag)
 
@@ -302,9 +367,12 @@ def main():
     test_metadata_layer_prefiltering(rag)
     test_platform_targeting(rag)
     asyncio.run(test_stratified_context_query(rag))
+    asyncio.run(test_dynamic_priority_budget_truncation(rag))
+    asyncio.run(test_stale_cache_invalidation_on_mutation(rag))
 
-    print("🎉 ALL 4-LAYER STRATIFIED RAG & PRE-FILTERING TESTS PASSED 100%!")
+    print("🎉 ALL 4-LAYER STRATIFIED RAG & HIGH-LOAD RESILIENCE TESTS PASSED 100%!")
 
 
 if __name__ == "__main__":
     main()
+

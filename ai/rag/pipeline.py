@@ -14,7 +14,7 @@ if hasattr(sys.stdout, 'reconfigure'):
 
 import asyncio
 from typing import List, Dict, Any, Optional
-from rag.models import Document, Chunk, RAGContext, DocCategoryEnum, PlatformTargetEnum, RetrievalResult
+from rag.models import Document, Chunk, RAGContext, DocCategoryEnum, TrustTierEnum, PlatformTargetEnum, RetrievalResult
 from rag.sanitizer import SemanticChunker, TextSanitizer
 from rag.hybrid_retriever import HybridRetriever
 from rag.reranker import CrossEncoderReranker
@@ -30,12 +30,77 @@ class CleanRAGPipeline:
         target_chunk_tokens: int = 350,
         overlap_tokens: int = 50,
         min_confidence_threshold: float = 0.55,
-        reranker_model: str = "BAAI/bge-reranker-base"
+        reranker_model: str = "BAAI/bge-reranker-base",
+        max_context_tokens: int = 1500,
+        max_episodic_directives: int = 3
     ):
         self.chunker = SemanticChunker(target_chunk_tokens, overlap_tokens)
         self.retriever = HybridRetriever()
         self.reranker = CrossEncoderReranker(reranker_model)
-        self.guard = AntiHallucinationGuard(min_confidence_threshold)
+        self.guard = AntiHallucinationGuard(
+            min_confidence_threshold=min_confidence_threshold,
+            max_context_tokens=max_context_tokens,
+            max_episodic_directives=max_episodic_directives
+        )
+
+    def add_directive(
+        self,
+        tenant_id: str,
+        directive_text: str,
+        source: str = "user_directive",
+        platform_target: str = "all"
+    ) -> Chunk:
+        """
+        Синхронное добавление директивы в episodic_memory с автоматической инвалидацией кэша тенанта.
+        Гарантирует отсутствие Stale Data при обновлении инструкций владельца.
+        """
+        import time
+        doc = Document(
+            doc_id=f"dir_{tenant_id}_{int(time.time() * 1000)}",
+            text=directive_text,
+            metadata={
+                "tenant_id": tenant_id,
+                "client_id": tenant_id,
+                "doc_category": DocCategoryEnum.EPISODIC_MEMORY.value,
+                "trust_tier": TrustTierEnum.SYSTEM_DIRECTIVE.value,
+                "platform_target": platform_target,
+                "source": source
+            },
+            source=source
+        )
+        self.ingest_documents([doc])
+        self.invalidate_cache(tenant_id)
+        chunks = self.chunker.chunk_document(doc)
+        return chunks[0] if chunks else Chunk(chunk_id=doc.doc_id, doc_id=doc.doc_id, text=doc.text, token_count=len(doc.text.split()))
+
+    async def add_directive_async(
+        self,
+        tenant_id: str,
+        directive_text: str,
+        source: str = "user_directive",
+        platform_target: str = "all"
+    ) -> Chunk:
+        """
+        Асинхронное добавление директивы в episodic_memory с Lock-защищённой инвалидацией кэша тенанта.
+        """
+        import time
+        doc = Document(
+            doc_id=f"dir_{tenant_id}_{int(time.time() * 1000)}",
+            text=directive_text,
+            metadata={
+                "tenant_id": tenant_id,
+                "client_id": tenant_id,
+                "doc_category": DocCategoryEnum.EPISODIC_MEMORY.value,
+                "trust_tier": TrustTierEnum.SYSTEM_DIRECTIVE.value,
+                "platform_target": platform_target,
+                "source": source
+            },
+            source=source
+        )
+        await self.ingest_documents_async([doc])
+        await self.invalidate_cache_async(tenant_id)
+        chunks = self.chunker.chunk_document(doc)
+        return chunks[0] if chunks else Chunk(chunk_id=doc.doc_id, doc_id=doc.doc_id, text=doc.text, token_count=len(doc.text.split()))
 
     def ingest_documents(self, documents: List[Document]) -> int:
         all_chunks: List[Chunk] = []
