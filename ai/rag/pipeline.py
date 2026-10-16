@@ -48,10 +48,12 @@ class CleanRAGPipeline:
         tenant_id: str,
         directive_text: str,
         source: str = "user_directive",
-        platform_target: str = "all"
+        platform_target: str = "all",
+        doc_category: str = DocCategoryEnum.EPISODIC_MEMORY.value,
+        trust_tier: str = TrustTierEnum.SYSTEM_DIRECTIVE.value
     ) -> Chunk:
         """
-        Синхронное добавление директивы в episodic_memory с автоматической инвалидацией кэша тенанта.
+        Синхронное добавление директивы/факта с автоматической инвалидацией кэша тенанта.
         Гарантирует отсутствие Stale Data при обновлении инструкций владельца.
         """
         import time
@@ -61,8 +63,8 @@ class CleanRAGPipeline:
             metadata={
                 "tenant_id": tenant_id,
                 "client_id": tenant_id,
-                "doc_category": DocCategoryEnum.EPISODIC_MEMORY.value,
-                "trust_tier": TrustTierEnum.SYSTEM_DIRECTIVE.value,
+                "doc_category": doc_category,
+                "trust_tier": trust_tier,
                 "platform_target": platform_target,
                 "source": source
             },
@@ -78,10 +80,12 @@ class CleanRAGPipeline:
         tenant_id: str,
         directive_text: str,
         source: str = "user_directive",
-        platform_target: str = "all"
+        platform_target: str = "all",
+        doc_category: str = DocCategoryEnum.EPISODIC_MEMORY.value,
+        trust_tier: str = TrustTierEnum.SYSTEM_DIRECTIVE.value
     ) -> Chunk:
         """
-        Асинхронное добавление директивы в episodic_memory с Lock-защищённой инвалидацией кэша тенанта.
+        Асинхронное добавление директивы/факта с Lock-защищённой инвалидацией кэша тенанта.
         """
         import time
         doc = Document(
@@ -90,8 +94,8 @@ class CleanRAGPipeline:
             metadata={
                 "tenant_id": tenant_id,
                 "client_id": tenant_id,
-                "doc_category": DocCategoryEnum.EPISODIC_MEMORY.value,
-                "trust_tier": TrustTierEnum.SYSTEM_DIRECTIVE.value,
+                "doc_category": doc_category,
+                "trust_tier": trust_tier,
                 "platform_target": platform_target,
                 "source": source
             },
@@ -101,6 +105,23 @@ class CleanRAGPipeline:
         await self.invalidate_cache_async(tenant_id)
         chunks = self.chunker.chunk_document(doc)
         return chunks[0] if chunks else Chunk(chunk_id=doc.doc_id, doc_id=doc.doc_id, text=doc.text, token_count=len(doc.text.split()))
+
+    async def add_hard_fact_async(
+        self,
+        tenant_id: str,
+        fact_text: str,
+        source: str = "owner_confirmation",
+        platform_target: str = "all"
+    ) -> Chunk:
+        """Добавление проверенного факта в слой hard_fact с trust_tier=VERIFIED_BY_OWNER."""
+        return await self.add_directive_async(
+            tenant_id=tenant_id,
+            directive_text=fact_text,
+            source=source,
+            platform_target=platform_target,
+            doc_category=DocCategoryEnum.HARD_FACT.value,
+            trust_tier=TrustTierEnum.VERIFIED_BY_OWNER.value
+        )
 
     def ingest_documents(self, documents: List[Document]) -> int:
         all_chunks: List[Chunk] = []
