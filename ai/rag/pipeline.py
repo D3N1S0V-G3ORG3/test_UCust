@@ -151,6 +151,7 @@ class CleanRAGPipeline:
 
         # 3. Guardrail защиты от галлюцинаций
         rag_context = self.guard.format_and_guard(cleaned_query, reranked_results)
+        self._record_telemetry(tenant_id, cleaned_query, rag_context)
 
         return rag_context
 
@@ -213,7 +214,27 @@ class CleanRAGPipeline:
             pass
 
         reranked_results = self.reranker.rerank(cleaned_query, merged_candidates, top_n=top_n_rerank)
-        return self.guard.format_and_guard(cleaned_query, reranked_results)
+        rag_context = self.guard.format_and_guard(cleaned_query, reranked_results)
+        self._record_telemetry(tenant_id, cleaned_query, rag_context)
+        return rag_context
+
+    @staticmethod
+    def _record_telemetry(tenant_id: Optional[str], query: str, context: RAGContext):
+        try:
+            from analytics.rag_telemetry import RAGTelemetryTracker
+            RAGTelemetryTracker.get_instance().record_query(
+                tenant_id=tenant_id or "global",
+                query=query,
+                context=context
+            )
+        except Exception:
+            pass
+
+    @classmethod
+    def get_telemetry_summary(cls) -> Dict[str, Any]:
+        """Возвращает сводку телеметрии качества RAG и усечения контекста для дашборда администратора."""
+        from analytics.rag_telemetry import RAGTelemetryTracker
+        return RAGTelemetryTracker.get_instance().get_summary().model_dump()
 
     # ── Async методы (Директива 6+7: Lock-защищённые операции) ───────────────
 
@@ -266,7 +287,9 @@ class CleanRAGPipeline:
         )
 
         # 3. Guardrail
-        return self.guard.format_and_guard(cleaned_query, reranked_results)
+        rag_context = self.guard.format_and_guard(cleaned_query, reranked_results)
+        self._record_telemetry(tenant_id, cleaned_query, rag_context)
+        return rag_context
 
     async def query_stratified_context_async(
         self,
@@ -336,4 +359,6 @@ class CleanRAGPipeline:
             None, self.reranker.rerank, cleaned_query, merged_candidates, top_n_rerank
         )
 
-        return self.guard.format_and_guard(cleaned_query, reranked_results)
+        rag_context = self.guard.format_and_guard(cleaned_query, reranked_results)
+        self._record_telemetry(tenant_id, cleaned_query, rag_context)
+        return rag_context
