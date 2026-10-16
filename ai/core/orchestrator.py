@@ -531,6 +531,15 @@ class PipelineOrchestratorFacade:
             if task_type in {"quick_scan", "scan_sources", "fast_onboarding"}:
                 u = user_data.get("url") or user_data.get("website") or ""
                 ch = user_data.get("channel") or user_data.get("telegram") or ""
+                if not u and user_data.get("urls") and isinstance(user_data["urls"], list):
+                    for item in user_data["urls"]:
+                        if not isinstance(item, str):
+                            continue
+                        if ("t.me" in item or "telegram" in item) and not ch:
+                            ch = item
+                        elif not u:
+                            u = item
+
                 res = await self.brand_service.scan_sources(u, ch, state.company_name)
                 self._log_trace(session_id, "BrandService", "SourcesScanned", {"url": u, "channel": ch})
                 return res

@@ -427,7 +427,7 @@ class WebsiteCollector:
         if schema_data.get('business_info', {}).get('phone') and schema_data['business_info']['phone'] not in phones:
             phones.insert(0, schema_data['business_info']['phone'])
 
-        social_profiles = {'telegram': [], 'vk': [], 'ok': [], 'whatsapp': [], 'youtube': [], 'instagram': []}
+        social_profiles = {'telegram': [], 'vk': [], 'ok': [], 'whatsapp': [], 'youtube': [], 'instagram': [], 'max': []}
         for link in parser.links:
             if 't.me/' in link or 'telegram.me/' in link:
                 social_profiles['telegram'].append(link)
@@ -441,6 +441,18 @@ class WebsiteCollector:
                 social_profiles['youtube'].append(link)
             elif 'instagram.com' in link:
                 social_profiles['instagram'].append(link)
+            elif 'max.ru/' in link:
+                social_profiles['max'].append(link)
+
+        # Дополнительное сканирование сырого HTML на случай ссылок внутри скриптов / Next.js hydration данных
+        for tg in re.findall(r'https?://(?:t\.me|telegram\.me)/[a-zA-Z0-9_+]+', html_content):
+            if not any(excl in tg.lower() for excl in ['share', 'joinchat/dummy']):
+                social_profiles['telegram'].append(tg)
+        for max_l in re.findall(r'https?://max\.ru/[a-zA-Z0-9_\-+]+', html_content):
+            social_profiles['max'].append(max_l)
+        for vk_l in re.findall(r'https?://vk\.com/[a-zA-Z0-9_\-+.]+', html_content):
+            if not any(excl in vk_l.lower() for excl in ['share.php', 'widget']):
+                social_profiles['vk'].append(vk_l)
 
         for k in social_profiles:
             social_profiles[k] = list(set(social_profiles[k]))
@@ -589,6 +601,10 @@ class WebsiteCollector:
 
         if phones or emails:
             summary_dossier += f"\nКонтакты: Телефоны={phones[:3]}, Email={emails[:2]}\n"
+
+        active_socials = [f"{k}: {', '.join(v)}" for k, v in social_profiles.items() if v]
+        if active_socials:
+            summary_dossier += f"Соцсети и каналы: {'; '.join(active_socials)}\n"
 
         # 7. Фильтрация и кэширование изображений
         LOGO_BANNER_EXCLUSIONS = {

@@ -149,7 +149,8 @@ class BrandService:
         telegram_channel: str = "",
         company_name: str = "UCust",
     ) -> Dict[str, Any]:
-        """Быстрый конкурентный скан внешних источников (Web + Telegram)."""
+        """Быстрый конкурентный скан внешних источников (Web + Telegram + авто-чейн соцсетей)."""
+        import re
         from collectors.website_collector import WebsiteCollector
         from collectors.telethon_collector import TelethonCollector
 
@@ -172,9 +173,75 @@ class BrandService:
         elif tg_task:
             tg_data = await tg_task
 
+        # 1. Авто-чейн Telegram (если канал не был передан в запросе, но найден на сайте)
+        if not telegram_channel and site_data and isinstance(site_data, dict):
+            discovered_tg = site_data.get("social_links", {}).get("telegram", [])
+            if discovered_tg:
+                raw_tg = discovered_tg[0]
+                tg_match = re.search(r'(?:t\.me|telegram\.me)/([a-zA-Z0-9_+]+)', raw_tg)
+                if tg_match and not tg_match.group(1).lower().endswith('bot'):
+                    telegram_channel = f"@{tg_match.group(1)}"
+                else:
+                    telegram_channel = raw_tg
+
+                logger.info(f"[BrandService] 🔗 Авто-чейн: найден Telegram-канал на сайте: {telegram_channel}. Запуск сбора постов...")
+                try:
+                    tg_collector = TelethonCollector()
+                    tg_data = await tg_collector.collect_async(channel=telegram_channel, limit=10)
+                except Exception as tg_err:
+                    logger.warning(f"[BrandService] Ошибка авто-сбора Telegram {telegram_channel}: {tg_err}")
+
+        # 2. Авто-чейн VK (если группа найдена на сайте)
+        vk_data = None
+        if site_data and isinstance(site_data, dict):
+            discovered_vk = site_data.get("social_links", {}).get("vk", [])
+            if discovered_vk:
+                try:
+                    from collectors.vk_collector import VKCollector
+                    vk_collector = VKCollector()
+                    vk_res = await vk_collector.collect_group_async(group_id_or_url=discovered_vk[0], limit=10)
+                    vk_data = vk_res.get("data", vk_res)
+                except Exception as vk_err:
+                    logger.warning(f"[BrandService] Ошибка авто-сбора VK: {vk_err}")
+
+        # 3. Формирование единого контракта с prefilled_profile и raw_sources для бэкенда
+        site_dict = site_data if isinstance(site_data, dict) else {}
+        b_name = company_name if (company_name and company_name != "UCust") else (site_dict.get("title") or "UCust")
+        niche = site_dict.get("description", "")[:60] if site_dict.get("description") else "Бизнес и услуги"
+        description = site_dict.get("description", "")
+        brand_colors = [site_dict.get("theme_color")] if site_dict.get("theme_color") else ["#3b82f6", "#1e293b"]
+        contacts = site_dict.get("contacts", {"phones": [], "emails": []})
+        social_profiles = site_dict.get("social_links", {})
+
+        prefilled_profile = {
+            "business_name": b_name,
+            "niche": niche,
+            "city": "Москва",
+            "description": description,
+            "brand_colors": brand_colors,
+            "contacts": contacts,
+            "reviews_summary": None,
+            "social_links": {
+                "website": target_url or site_dict.get("url"),
+                "telegram": telegram_channel or (social_profiles.get("telegram", [None])[0] if social_profiles.get("telegram") else None),
+                "vk": (social_profiles.get("vk", [None])[0] if social_profiles.get("vk") else None),
+                "max": (social_profiles.get("max", [None])[0] if social_profiles.get("max") else None),
+            }
+        }
+
+        raw_sources = {
+            "website": site_data if not isinstance(site_data, Exception) else None,
+            "telegram": tg_data.payload if hasattr(tg_data, "payload") else tg_data,
+            "vk": vk_data,
+            "maps": None,
+        }
+
         return {
             "status": "success",
-            "company_name": company_name,
+            "task_type": "quick_scan",
+            "company_name": b_name,
+            "prefilled_profile": prefilled_profile,
+            "raw_sources": raw_sources,
             "website_data": site_data if not isinstance(site_data, Exception) else None,
             "telegram_data": tg_data.payload if hasattr(tg_data, "payload") else tg_data,
         }
