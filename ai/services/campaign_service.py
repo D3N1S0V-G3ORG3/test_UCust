@@ -474,14 +474,37 @@ class CampaignService:
             "score": res.get("score", 0.0),
         }
 
-    async def get_ideas(self, niche: str, count: int = 5) -> Dict[str, Any]:
-        """Генерация идей из SmartIdeaBank."""
+    async def get_ideas(
+        self,
+        niche: str,
+        count: int = 5,
+        company_name: str = "",
+        country: str = "россия",
+        days_ahead: int = 21,
+        task_type: str = "get_idea_bank",
+    ) -> Dict[str, Any]:
+        """Генерация идей и плейсхолдеров из SmartIdeaBank."""
         from skills.smart_idea_bank import SmartIdeaBank
 
         bank = SmartIdeaBank()
-        ideas = bank.suggest_top_ideas(niche=niche, limit=count)
+        ideas = bank.suggest_top_ideas(
+            niche=niche,
+            limit=count,
+            company_name=company_name,
+            country=country,
+            days_ahead=days_ahead,
+        )
+        placeholders = bank.get_dynamic_placeholders(
+            niche=niche,
+            company_name=company_name,
+            limit=count,
+        )
         return {
             "status": "success",
+            "task_type": task_type,
             "niche": niche,
+            "company_name": company_name,
+            "ideas_count": len(ideas),
             "ideas": ideas,
+            "placeholders": [p.dict() for p in placeholders],
         }

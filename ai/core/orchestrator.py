@@ -562,8 +562,15 @@ class PipelineOrchestratorFacade:
                 return res
 
             if task_type in {"get_placeholders", "placeholders", "suggest_placeholders", "get_idea_bank", "idea_bank", "quick_ideas"}:
-                res = await self.campaign_service.get_ideas(niche=state.niche, count=int(user_data.get("limit", 5)))
-                self._log_trace(session_id, "CampaignService", "IdeaBankQueried", {"niche": state.niche})
+                res = await self.campaign_service.get_ideas(
+                    niche=state.niche or user_data.get("niche", "бизнес"),
+                    count=int(user_data.get("limit") or user_data.get("count") or 5),
+                    company_name=state.company_name or user_data.get("company_name", ""),
+                    country=user_data.get("country", "россия"),
+                    days_ahead=int(user_data.get("days_ahead", 21)),
+                    task_type=task_type,
+                )
+                self._log_trace(session_id, "CampaignService", "IdeaBankQueried", {"niche": state.niche, "ideas_count": len(res.get("ideas", []))})
                 return res
 
             if task_type in {"generate_poll", "poll_generate", "create_poll", "quiz_generate"}:

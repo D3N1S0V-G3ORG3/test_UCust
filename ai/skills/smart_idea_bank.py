@@ -265,6 +265,51 @@ class SmartIdeaBank:
 
         return cards
 
+    def suggest_top_ideas(
+        self,
+        niche: str = "Бизнес",
+        limit: int = 5,
+        company_name: str = "",
+        country: str = "россия",
+        days_ahead: int = 21,
+        **kwargs: Any
+    ) -> List[Dict[str, Any]]:
+        """
+        Предлагает структурированный банк лучших идей для контента (Idea Bank) для заданной ниши и бренда.
+        Объединяет календарные инфоповоды, отраслевые праздники, ситуативные темы и вечнозеленые рубрики.
+        """
+        cards = self.get_quick_ideas_bank(
+            niche=niche,
+            country=country,
+            days_ahead=days_ahead,
+            company_name=company_name
+        )
+        ideas: List[Dict[str, Any]] = [c.dict() for c in cards]
+
+        # Если календарных идей меньше заданного лимита, дополняем вечнозелеными плейсхолдерами
+        if len(ideas) < limit:
+            placeholders = self.get_dynamic_placeholders(
+                niche=niche,
+                company_name=company_name,
+                limit=max(limit - len(ideas), 3)
+            )
+            for idx, p in enumerate(placeholders):
+                ideas.append({
+                    "id": f"idea_evergreen_{idx}",
+                    "title": p.suggested_topic,
+                    "description": p.placeholder_text,
+                    "date_str": "Регулярная рубрика",
+                    "days_until": 0,
+                    "category": p.source_type,
+                    "suggested_funnel": p.funnel_stage,
+                    "suggested_framework": "AIDA",
+                    "niche_relevance": 0.90,
+                    "crossover_angle": p.hint,
+                    "sample_hook": p.suggested_topic,
+                })
+
+        return ideas[:limit]
+
     def evaluate_funnel_placement(
         self,
         topic: str,
