@@ -105,21 +105,25 @@ class BrandService:
                 "key_usp": ["Автономный маркетинг", "Индивидуальный стиль"],
             }
 
-        # 3. Синхронизация фактов в RAG, если RAG инициализирован
+        # 3. Синхронизация фактов в RAG с метаданными Provenance (Verified vs Inferred)
         if self.rag and state.rag_facts:
             try:
-                rag_docs = [
-                    Document(
+                rag_docs = []
+                for idx, fact in enumerate(state.rag_facts):
+                    is_synth = "[NICHE_PRIOR]" in fact or "Стиль и ToV" in fact
+                    rag_docs.append(Document(
                         doc_id=f"brand_fact_{state.tenant_id}_{idx+1}",
                         text=fact,
                         metadata={
                             "category": "brand_dna",
                             "company_name": company_name,
                             "tenant_id": state.tenant_id,
+                            "trust_tier": "inferred" if is_synth else "verified",
+                            "source": "niche_prior" if is_synth else "extracted",
+                            "is_synthetic": is_synth,
+                            "confidence": 0.85 if is_synth else 1.0,
                         },
-                    )
-                    for idx, fact in enumerate(state.rag_facts)
-                ]
+                    ))
                 await self.rag.ingest_documents_async(rag_docs)
             except Exception as r_err:
                 logger.warning(f"[BrandService] Ошибка сохранения Brand DNA в RAG: {r_err}")
@@ -216,6 +220,28 @@ class BrandService:
         contacts = site_dict.get("contacts", {"phones": [], "emails": []})
         social_profiles = site_dict.get("social_links", {})
 
+        # 4. Построение TieredBrandDossier (Hard Facts vs Soft Attributes vs Dynamic Fields)
+        combined_corpus_parts = []
+        if site_dict:
+            combined_corpus_parts.append(site_dict.get("structured_dossier") or site_dict.get("description") or "")
+        if tg_data and hasattr(tg_data, "payload") and isinstance(tg_data.payload, dict):
+            for msg in tg_data.payload.get("messages", [])[:5]:
+                if msg.get("text"):
+                    combined_corpus_parts.append(msg["text"])
+        if vk_data and isinstance(vk_data, dict):
+            for post in vk_data.get("posts", [])[:5]:
+                if post.get("text"):
+                    combined_corpus_parts.append(post["text"])
+
+        combined_text = "\n\n".join([p for p in combined_corpus_parts if p.strip()])
+        from skills.niche_priors import NichePriorsEngine
+        tiered_dossier = NichePriorsEngine.build_tiered_dossier(
+            raw_text=combined_text,
+            company_name=b_name,
+            niche=niche,
+            city="Москва"
+        )
+
         prefilled_profile = {
             "business_name": b_name,
             "niche": niche,
@@ -229,7 +255,13 @@ class BrandService:
                 "telegram": telegram_channel or (social_profiles.get("telegram", [None])[0] if social_profiles.get("telegram") else None),
                 "vk": (social_profiles.get("vk", [None])[0] if social_profiles.get("vk") else None),
                 "max": (social_profiles.get("max", [None])[0] if social_profiles.get("max") else None),
-            }
+            },
+            "data_richness_score": tiered_dossier.data_richness_score,
+            "drs_tier": tiered_dossier.drs_tier,
+            "missing_hard_slots": tiered_dossier.missing_hard_slots,
+            "reverse_interrogation_questions": tiered_dossier.reverse_interrogation_questions,
+            "tiered_dossier": tiered_dossier.model_dump(),
+            "anti_hallucination_guardrails": tiered_dossier.get_anti_hallucination_guardrails(),
         }
 
         raw_sources = {
@@ -245,6 +277,8 @@ class BrandService:
             "company_name": b_name,
             "prefilled_profile": prefilled_profile,
             "raw_sources": raw_sources,
+            "tiered_dossier": tiered_dossier.model_dump(),
+            "anti_hallucination_guardrails": tiered_dossier.get_anti_hallucination_guardrails(),
             "website_data": site_data if not isinstance(site_data, Exception) else None,
             "telegram_data": tg_data.payload if hasattr(tg_data, "payload") else tg_data,
         }
@@ -347,7 +381,7 @@ class BrandService:
         company_name: str = "Наша Компания",
         niche: str = "Бизнес",
     ) -> Dict[str, Any]:
-        """Пакетное неблокирующее извлечение документов (PDF, DOCX, TXT) и обогащение RAG."""
+        """Пакетное неблокирующее извлечение документов (PDF, DOCX, TXT), построение TieredBrandDossier и обогащение RAG."""
         from collectors.document_collector import DocumentCollector
 
         doc_collector = DocumentCollector()
@@ -361,6 +395,12 @@ class BrandService:
                 logger.warning(f"[BrandService] Ошибка синхронизации документов с RAG: {r_err}")
 
         dossier = await asyncio.to_thread(doc_collector.synthesize_dossier_from_docs, extracted)
+        tiered_dossier = await asyncio.to_thread(
+            doc_collector.synthesize_tiered_dossier,
+            extracted,
+            company_name,
+            niche
+        )
 
         return {
             "status": "success",
@@ -370,6 +410,13 @@ class BrandService:
             "indexed_count": indexed_count,
             "dossier": dossier,
             "extracted": extracted,
+            "tiered_dossier": tiered_dossier.model_dump(),
+            "prefilled_profile": tiered_dossier.to_prefilled_profile(),
+            "anti_hallucination_guardrails": tiered_dossier.get_anti_hallucination_guardrails(),
+            "data_richness_score": tiered_dossier.data_richness_score,
+            "drs_tier": tiered_dossier.drs_tier,
+            "missing_hard_slots": tiered_dossier.missing_hard_slots,
+            "reverse_interrogation_questions": tiered_dossier.reverse_interrogation_questions,
         }
 
     async def load_profile(

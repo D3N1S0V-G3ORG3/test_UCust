@@ -242,19 +242,47 @@ class DocumentCollector:
             ))
 
         if docs_to_ingest:
-            from skills.data_richness_engine import DataRichnessEngine
+            from skills.niche_priors import NichePriorsEngine
             all_text = " ".join([d.text for d in docs_to_ingest])
-            drs_result = DataRichnessEngine.evaluate_text(all_text, company_name=company_name)
-            logger.info(f"[DocumentCollector] 🎯 Data Richness Score: {drs_result.total_score}/100 (Tier: {drs_result.tier.value.upper()}) | {drs_result.recommendation}")
-            
-            # Прикрепляем DRS метаданные к каждому документу
+            tiered_dossier = NichePriorsEngine.build_tiered_dossier(
+                raw_text=all_text,
+                company_name=company_name,
+                niche=niche
+            )
+            logger.info(
+                f"[DocumentCollector] 🎯 Data Richness Score: {tiered_dossier.data_richness_score}/100 "
+                f"(Tier: {tiered_dossier.drs_tier.upper()}) | Hard Facts: {len(tiered_dossier.hard_facts)}, "
+                f"Soft: {len(tiered_dossier.soft_attributes)}, Dynamic: {len(tiered_dossier.dynamic_attributes)}"
+            )
+
+            # Прикрепляем Provenance метаданные к каждому документу
             for doc in docs_to_ingest:
-                doc.metadata["data_richness_score"] = drs_result.total_score
-                doc.metadata["drs_tier"] = drs_result.tier.value
-                doc.metadata["allowed_frameworks"] = drs_result.allowed_frameworks
+                doc.metadata["data_richness_score"] = tiered_dossier.data_richness_score
+                doc.metadata["drs_tier"] = tiered_dossier.drs_tier
+                doc.metadata["trust_tier"] = "verified"
+                doc.metadata["source"] = "extracted"
+                doc.metadata["is_synthetic"] = False
+                doc.metadata["missing_hard_slots"] = tiered_dossier.missing_hard_slots
+
+            # Добавляем структурированные факты бренда из TieredBrandDossier
+            for idx, fact_str in enumerate(tiered_dossier.rag_grounded_facts):
+                is_synth = fact_str.startswith("[NICHE_PRIOR]")
+                docs_to_ingest.append(Document(
+                    doc_id=f"fact_{company_name}_{idx+1}",
+                    text=fact_str,
+                    metadata={
+                        "category": "grounded_facts",
+                        "company_name": company_name,
+                        "niche": niche,
+                        "trust_tier": "inferred" if is_synth else "verified",
+                        "source": "niche_prior" if is_synth else "extracted",
+                        "is_synthetic": is_synth,
+                        "confidence": 0.85 if is_synth else 1.0
+                    }
+                ))
 
             indexed_count = await rag_pipeline.ingest_documents_async(docs_to_ingest)
-            logger.info(f"[DocumentCollector] 📚 Успешно заиндексировано {indexed_count} чанков из {len(docs_to_ingest)} клиентских файлов в RAG для {company_name}.")
+            logger.info(f"[DocumentCollector] 📚 Успешно заиндексировано {indexed_count} чанков и фактов в RAG для {company_name}.")
             return indexed_count
         return 0
 
@@ -268,3 +296,26 @@ class DocumentCollector:
             if d.get("status") == "success" and d.get("raw_text")
         ]
         return "\n\n".join(valid_texts)
+
+    def synthesize_tiered_dossier(
+        self,
+        extracted_docs: List[Dict[str, Any]],
+        company_name: str,
+        niche: str,
+        city: str = "Москва",
+        extra_meta: Optional[Dict[str, Any]] = None
+    ) -> Any:
+        """
+        Формирует структурированное TieredBrandDossier с классификацией
+        Hard Facts, Soft Attributes и Dynamic Fields.
+        """
+        from skills.niche_priors import NichePriorsEngine
+        raw_corpus = self.synthesize_dossier_from_docs(extracted_docs)
+        return NichePriorsEngine.build_tiered_dossier(
+            raw_text=raw_corpus,
+            company_name=company_name,
+            niche=niche,
+            city=city,
+            extra_meta=extra_meta
+        )
+

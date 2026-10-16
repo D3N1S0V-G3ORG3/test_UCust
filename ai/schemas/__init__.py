@@ -15,6 +15,13 @@ from schemas.feedback_state import (
     TenantBaseline,
     FeedbackKnowledgeRefinement,
 )
+from schemas.provenance_contracts import (
+    FieldCategoryEnum,
+    FieldProvenanceEnum,
+    FallbackStrategyEnum,
+    InferredFieldSchema,
+    TieredBrandDossier,
+)
 from schemas.models import *
 
 __all__ = [
@@ -32,4 +39,9 @@ __all__ = [
     "EngagementScore",
     "TenantBaseline",
     "FeedbackKnowledgeRefinement",
+    "FieldCategoryEnum",
+    "FieldProvenanceEnum",
+    "FallbackStrategyEnum",
+    "InferredFieldSchema",
+    "TieredBrandDossier",
 ]
