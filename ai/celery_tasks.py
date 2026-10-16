@@ -84,6 +84,7 @@ if HAS_CELERY:
             "celery_tasks.collect_raw_trends_task": {"queue": QUEUE_TREND_MINING},
             "celery_tasks.process_trend_clusters_task": {"queue": QUEUE_TREND_MINING},
             "celery_tasks.collect_channel_telemetry_batch_task": {"queue": QUEUE_FEEDBACK},
+            "celery_tasks.monitor_drs_and_trigger_interrogation_task": {"queue": QUEUE_FEEDBACK},
             "celery_tasks.*": {"queue": QUEUE_BUSINESS},
         },
         beat_schedule={
@@ -99,6 +100,11 @@ if HAS_CELERY:
             },
             "collect-telemetry-hourly": {
                 "task": "celery_tasks.collect_channel_telemetry_batch_task",
+                "schedule": 3600.0,
+                "options": {"queue": QUEUE_FEEDBACK},
+            },
+            "monitor-drs-and-trigger-interrogations-hourly": {
+                "task": "celery_tasks.monitor_drs_and_trigger_interrogation_task",
                 "schedule": 3600.0,
                 "options": {"queue": QUEUE_FEEDBACK},
             },
@@ -770,6 +776,68 @@ def enqueue_telemetry_batch_task(
         "tenant_id": tenant_id,
         "timestamp": datetime.utcnow().isoformat(),
     }
+
+
+@celery_app.task(name="celery_tasks.monitor_drs_and_trigger_interrogation_task", bind=True)
+def monitor_drs_and_trigger_interrogation_task(
+    self,
+    min_drs_threshold: int = 40,
+    max_fallback_rate_pct: float = 50.0,
+    tenant_ids: Optional[List[str]] = None
+) -> Dict[str, Any]:
+    """
+    Фоновый периодический воркер мониторинга Data Richness Score (DRS) и запуска микро-опросов:
+    1. Сканирует профили и телеметрию тенантов на низкую фактуру (DRS < 40) или частые сбои (Fallback Rate >= 50%).
+    2. Определяет критический отсутствующий слот (pricing_model, terms_guarantees, contacts).
+    3. Отправляет пуш-опрос через TelegramPublisher с интерактивными кнопками Safe Fallback.
+    4. Фиксирует состояние опроса в SlotElevationHandler для обработки последующего ответа.
+    """
+    task_id = getattr(self.request, "id", "sync-drs-task")
+    logger.info(f"🩺 [Celery:feedback_loop] Старт DRS Health Monitor (Task ID: {task_id})")
+
+    from analytics.drs_health_monitor import DRSHealthMonitor
+
+    monitor = DRSHealthMonitor(
+        min_drs_threshold=min_drs_threshold,
+        max_fallback_rate_pct=max_fallback_rate_pct
+    )
+
+    if tenant_ids:
+        for tid in tenant_ids:
+            monitor.register_tenant_telegram(tid, tid)
+
+    summary = monitor.scan_all_tenants_sync()
+    summary["task_id"] = task_id
+    return summary
+
+
+def enqueue_drs_monitor_task(
+    min_drs_threshold: int = 40,
+    max_fallback_rate_pct: float = 50.0,
+    tenant_ids: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Вспомогательная функция для постановки задачи мониторинга DRS в очередь feedback_loop."""
+    if HAS_CELERY and hasattr(monitor_drs_and_trigger_interrogation_task, "apply_async"):
+        async_result = monitor_drs_and_trigger_interrogation_task.apply_async(
+            kwargs={
+                "min_drs_threshold": min_drs_threshold,
+                "max_fallback_rate_pct": max_fallback_rate_pct,
+                "tenant_ids": tenant_ids,
+            },
+            queue=QUEUE_FEEDBACK,
+        )
+        task_id = async_result.id
+    else:
+        import uuid
+        task_id = f"mock_drs_{uuid.uuid4().hex[:12]}"
+
+    return {
+        "status": "QUEUED",
+        "task_id": task_id,
+        "queue": QUEUE_FEEDBACK,
+        "timestamp": datetime.utcnow().isoformat(),
+    }
+
 
 
 

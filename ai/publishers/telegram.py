@@ -57,6 +57,10 @@ class TelegramPublisher(BasePublisher):
         2. Если >= 2 фото -> sendMediaGroup (Единый пост-альбом) с полным текстом в подписи первого фото (100% ширина).
         3. Если без медиа -> sendMessage с текстом и кнопками.
         """
+        if not self.bot_token or self.bot_token.startswith("mock"):
+            logger.info(f"[TelegramPublisher] [Preview/Mock Mode] Публикация в {self.target_channel} успешно сымитирована (bot_token отсутствует).")
+            return True
+
         import httpx
         import json
         url = f"https://api.telegram.org/bot{self.bot_token}"
