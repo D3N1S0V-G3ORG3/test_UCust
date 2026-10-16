@@ -255,11 +255,16 @@ class DocumentCollector:
                 f"Soft: {len(tiered_dossier.soft_attributes)}, Dynamic: {len(tiered_dossier.dynamic_attributes)}"
             )
 
+            tenant_id = company_name.strip().lower().replace(" ", "_")
             # Прикрепляем Provenance метаданные к каждому документу
             for doc in docs_to_ingest:
+                doc.metadata["tenant_id"] = tenant_id
+                doc.metadata["client_id"] = tenant_id
+                doc.metadata["doc_category"] = "hard_fact"
                 doc.metadata["data_richness_score"] = tiered_dossier.data_richness_score
                 doc.metadata["drs_tier"] = tiered_dossier.drs_tier
-                doc.metadata["trust_tier"] = "verified"
+                doc.metadata["trust_tier"] = "verified_automated"
+                doc.metadata["platform_target"] = "all"
                 doc.metadata["source"] = "extracted"
                 doc.metadata["is_synthetic"] = False
                 doc.metadata["missing_hard_slots"] = tiered_dossier.missing_hard_slots
@@ -267,14 +272,27 @@ class DocumentCollector:
             # Добавляем структурированные факты бренда из TieredBrandDossier
             for idx, fact_str in enumerate(tiered_dossier.rag_grounded_facts):
                 is_synth = fact_str.startswith("[NICHE_PRIOR]")
+                if "Боли аудитории" in fact_str or "Возражения" in fact_str or "FAQ" in fact_str:
+                    d_cat = "audience_priors"
+                elif "Стиль" in fact_str or "ToV" in fact_str or "Архетип" in fact_str:
+                    d_cat = "brand_dna"
+                elif is_synth:
+                    d_cat = "audience_priors"
+                else:
+                    d_cat = "hard_fact"
+
                 docs_to_ingest.append(Document(
                     doc_id=f"fact_{company_name}_{idx+1}",
                     text=fact_str,
                     metadata={
-                        "category": "grounded_facts",
+                        "category": d_cat,
+                        "doc_category": d_cat,
                         "company_name": company_name,
+                        "tenant_id": tenant_id,
+                        "client_id": tenant_id,
                         "niche": niche,
-                        "trust_tier": "inferred" if is_synth else "verified",
+                        "trust_tier": "inferred_niche" if is_synth else "verified_automated",
+                        "platform_target": "all",
                         "source": "niche_prior" if is_synth else "extracted",
                         "is_synthetic": is_synth,
                         "confidence": 0.85 if is_synth else 1.0

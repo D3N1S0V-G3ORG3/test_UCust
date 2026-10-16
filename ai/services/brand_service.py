@@ -111,14 +111,26 @@ class BrandService:
                 rag_docs = []
                 for idx, fact in enumerate(state.rag_facts):
                     is_synth = "[NICHE_PRIOR]" in fact or "Стиль и ToV" in fact
+                    if "Боли аудитории" in fact or "Возражения" in fact or "FAQ" in fact:
+                        d_cat = "audience_priors"
+                    elif "Стиль" in fact or "ToV" in fact or "Архетип" in fact or "УТП" in fact:
+                        d_cat = "brand_dna"
+                    elif is_synth:
+                        d_cat = "audience_priors"
+                    else:
+                        d_cat = "hard_fact"
+
                     rag_docs.append(Document(
                         doc_id=f"brand_fact_{state.tenant_id}_{idx+1}",
                         text=fact,
                         metadata={
-                            "category": "brand_dna",
+                            "category": d_cat,
+                            "doc_category": d_cat,
                             "company_name": company_name,
                             "tenant_id": state.tenant_id,
-                            "trust_tier": "inferred" if is_synth else "verified",
+                            "client_id": state.tenant_id,
+                            "trust_tier": "inferred_niche" if is_synth else "verified_by_owner",
+                            "platform_target": "all",
                             "source": "niche_prior" if is_synth else "extracted",
                             "is_synthetic": is_synth,
                             "confidence": 0.85 if is_synth else 1.0,

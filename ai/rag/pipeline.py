@@ -1,7 +1,8 @@
 """
-Clean RAG Pipeline Facade with Multi-Tenant Partitioning
+Clean RAG Pipeline Facade with Multi-Tenant Partitioning and 4-Layer Knowledge Stratification
 
 Директива 6+7: async-методы для Lock-защищённой инвалидации кэша и поиска.
+Директива Stratified RAG: 4-слойная изоляция Hard Ground Truth, Brand DNA, Audience Priors и Episodic Memory.
 """
 
 import sys
@@ -13,7 +14,7 @@ if hasattr(sys.stdout, 'reconfigure'):
 
 import asyncio
 from typing import List, Dict, Any, Optional
-from rag.models import Document, Chunk, RAGContext
+from rag.models import Document, Chunk, RAGContext, DocCategoryEnum, PlatformTargetEnum, RetrievalResult
 from rag.sanitizer import SemanticChunker, TextSanitizer
 from rag.hybrid_retriever import HybridRetriever
 from rag.reranker import CrossEncoderReranker
@@ -21,10 +22,8 @@ from rag.guard import AntiHallucinationGuard
 
 class CleanRAGPipeline:
     """
-    Высоконадежный локальный Clean RAG пайплайн для UCust с жесткой изоляцией tenant_id.
-
-    Директивы 6+7: все мутирующие операции над кэшем доступны в async-вариантах
-    с Lock-защитой для безопасного параллельного доступа от 50+ тенантов.
+    Высоконадежный локальный Clean RAG пайплайн для UCust с жесткой изоляцией tenant_id
+    и 4-слойной стратификацией знаний (Hard Ground Truth, Brand DNA, Audience Priors, Episodic Memory).
     """
     def __init__(
         self,
@@ -60,13 +59,22 @@ class CleanRAGPipeline:
         """Синхронное удаление документов тенанта и сброс его кэша."""
         self.retriever.delete_tenant(tenant_id)
 
-    def query(self, query_text: str, top_k_retrieval: int = 10, top_n_rerank: int = 5, tenant_id: Optional[str] = None) -> RAGContext:
+    def query(
+        self,
+        query_text: str,
+        top_k_retrieval: int = 10,
+        top_n_rerank: int = 5,
+        tenant_id: Optional[str] = None,
+        filters: Optional[Dict[str, Any]] = None
+    ) -> RAGContext:
         cleaned_query = TextSanitizer.sanitize(query_text)
         if not cleaned_query:
             return self.guard.format_and_guard(query_text, [])
 
-        # 1. Гибридный поиск с Multi-Tenant фильтром (Bounded: top_k_retrieval=10)
-        retrieved_candidates = self.retriever.hybrid_search(cleaned_query, top_k=top_k_retrieval, tenant_id=tenant_id)
+        # 1. Гибридный поиск с Multi-Tenant фильтром и Metadata Pre-Filtering
+        retrieved_candidates = self.retriever.hybrid_search(
+            cleaned_query, top_k=top_k_retrieval, tenant_id=tenant_id, filters=filters
+        )
         try:
             from services.trend_service import TrendService
             retrieved_candidates = TrendService.filter_active_trend_documents(retrieved_candidates)
@@ -80,6 +88,67 @@ class CleanRAGPipeline:
         rag_context = self.guard.format_and_guard(cleaned_query, reranked_results)
 
         return rag_context
+
+    def query_stratified_context(
+        self,
+        query_text: str,
+        tenant_id: str,
+        platform_target: Optional[str] = None,
+        layers: Optional[List[str]] = None,
+        per_layer_k: int = 3,
+        top_n_rerank: int = 10
+    ) -> RAGContext:
+        """
+        Синхронное извлечение сбалансированного 4-слойного контекста:
+        - hard_fact (Жёсткие факты: цены, габариты, сроки)
+        - brand_dna (ДНК бренда: ToV, редполитика)
+        - audience_priors (Боли ЦА: триггеры, возражения, FAQ)
+        - episodic_memory (Свежие директивы владельца)
+        """
+        cleaned_query = TextSanitizer.sanitize(query_text)
+        if not cleaned_query:
+            return self.guard.format_and_guard(query_text, [])
+
+        target_layers = layers or [
+            DocCategoryEnum.HARD_FACT.value,
+            DocCategoryEnum.BRAND_DNA.value,
+            DocCategoryEnum.AUDIENCE_PRIORS.value,
+            DocCategoryEnum.EPISODIC_MEMORY.value,
+        ]
+
+        seen_chunk_ids = set()
+        merged_candidates: List[RetrievalResult] = []
+
+        for layer in target_layers:
+            layer_filters: Dict[str, Any] = {"doc_category": layer, "tenant_id": tenant_id}
+            if platform_target:
+                layer_filters["platform_target"] = platform_target
+
+            candidates = self.retriever.hybrid_search(
+                cleaned_query, top_k=per_layer_k * 2, tenant_id=tenant_id, filters=layer_filters
+            )
+            for c in candidates:
+                if c.chunk.chunk_id not in seen_chunk_ids:
+                    seen_chunk_ids.add(c.chunk.chunk_id)
+                    merged_candidates.append(c)
+
+        # Если слои пустые (например, старые неразмеченные документы), делаем fallback
+        if not merged_candidates:
+            fallback_filters: Dict[str, Any] = {"tenant_id": tenant_id}
+            if platform_target:
+                fallback_filters["platform_target"] = platform_target
+            merged_candidates = self.retriever.hybrid_search(
+                cleaned_query, top_k=per_layer_k * 4, tenant_id=tenant_id, filters=fallback_filters
+            )
+
+        try:
+            from services.trend_service import TrendService
+            merged_candidates = TrendService.filter_active_trend_documents(merged_candidates)
+        except Exception:
+            pass
+
+        reranked_results = self.reranker.rerank(cleaned_query, merged_candidates, top_n=top_n_rerank)
+        return self.guard.format_and_guard(cleaned_query, reranked_results)
 
     # ── Async методы (Директива 6+7: Lock-защищённые операции) ───────────────
 
@@ -104,19 +173,20 @@ class CleanRAGPipeline:
         query_text: str,
         top_k_retrieval: int = 10,
         top_n_rerank: int = 5,
-        tenant_id: Optional[str] = None
+        tenant_id: Optional[str] = None,
+        filters: Optional[Dict[str, Any]] = None
     ) -> RAGContext:
         """
-        Директива 7: Использует hybrid_search_async с Lock-защищённой записью в кэш.
+        Директива 7: Использует hybrid_search_async с Lock-защищённой записью в кэш и Metadata Pre-Filtering.
         Безопасен для параллельного вызова из 50+ asyncio-тасков.
         """
         cleaned_query = TextSanitizer.sanitize(query_text)
         if not cleaned_query:
             return self.guard.format_and_guard(query_text, [])
 
-        # 1. Lock-защищённый гибридный поиск
+        # 1. Lock-защищённый гибридный поиск с pre-filtering
         retrieved_candidates = await self.retriever.hybrid_search_async(
-            cleaned_query, top_k=top_k_retrieval, tenant_id=tenant_id
+            cleaned_query, top_k=top_k_retrieval, tenant_id=tenant_id, filters=filters
         )
         try:
             from services.trend_service import TrendService
@@ -130,7 +200,75 @@ class CleanRAGPipeline:
             None, self.reranker.rerank, cleaned_query, retrieved_candidates, top_n_rerank
         )
 
-
         # 3. Guardrail
         return self.guard.format_and_guard(cleaned_query, reranked_results)
 
+    async def query_stratified_context_async(
+        self,
+        query_text: str,
+        tenant_id: str,
+        platform_target: Optional[str] = None,
+        layers: Optional[List[str]] = None,
+        per_layer_k: int = 3,
+        top_n_rerank: int = 10
+    ) -> RAGContext:
+        """
+        Директива 4-слойной стратификации знаний (Async):
+        Выполняет параллельный поиск по слоям:
+        1. Hard Ground Truth (hard_fact)
+        2. Brand DNA & Redpolicy (brand_dna)
+        3. Audience Priors (audience_priors)
+        4. Episodic Memory (episodic_memory)
+        Гарантирует, что генеративная модель получит сбалансированную информацию без вытеснения редполитики или фактов.
+        """
+        cleaned_query = TextSanitizer.sanitize(query_text)
+        if not cleaned_query:
+            return self.guard.format_and_guard(query_text, [])
+
+        target_layers = layers or [
+            DocCategoryEnum.HARD_FACT.value,
+            DocCategoryEnum.BRAND_DNA.value,
+            DocCategoryEnum.AUDIENCE_PRIORS.value,
+            DocCategoryEnum.EPISODIC_MEMORY.value,
+        ]
+
+        # Параллельный поиск по всем целевым слоям
+        async def _fetch_layer(layer_name: str) -> List[RetrievalResult]:
+            layer_filters: Dict[str, Any] = {"doc_category": layer_name, "tenant_id": tenant_id}
+            if platform_target:
+                layer_filters["platform_target"] = platform_target
+            return await self.retriever.hybrid_search_async(
+                cleaned_query, top_k=per_layer_k * 2, tenant_id=tenant_id, filters=layer_filters
+            )
+
+        layer_results = await asyncio.gather(*[_fetch_layer(l) for l in target_layers])
+
+        seen_chunk_ids = set()
+        merged_candidates: List[RetrievalResult] = []
+        for cand_list in layer_results:
+            for c in cand_list:
+                if c.chunk.chunk_id not in seen_chunk_ids:
+                    seen_chunk_ids.add(c.chunk.chunk_id)
+                    merged_candidates.append(c)
+
+        # Если слои пустые (старые документы без разметки), делаем общий запрос
+        if not merged_candidates:
+            fallback_filters: Dict[str, Any] = {"tenant_id": tenant_id}
+            if platform_target:
+                fallback_filters["platform_target"] = platform_target
+            merged_candidates = await self.retriever.hybrid_search_async(
+                cleaned_query, top_k=per_layer_k * 4, tenant_id=tenant_id, filters=fallback_filters
+            )
+
+        try:
+            from services.trend_service import TrendService
+            merged_candidates = TrendService.filter_active_trend_documents(merged_candidates)
+        except Exception:
+            pass
+
+        loop = asyncio.get_running_loop()
+        reranked_results = await loop.run_in_executor(
+            None, self.reranker.rerank, cleaned_query, merged_candidates, top_n_rerank
+        )
+
+        return self.guard.format_and_guard(cleaned_query, reranked_results)

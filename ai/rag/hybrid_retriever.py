@@ -19,10 +19,74 @@ from typing import List, Dict, Any, Optional, Tuple
 from collections import Counter
 from rag.models import Chunk, RetrievalResult
 
+def _matches_filters(
+    chunk_meta: Dict[str, Any],
+    filters: Optional[Dict[str, Any]] = None,
+    tenant_id: Optional[str] = None
+) -> bool:
+    """
+    Строгий пре-фильтр чанков перед вычислением Dense / Sparse скоров.
+    Изолирует арендаторов (client_id / tenant_id) и стратифицирует слои (doc_category, trust_tier, platform_target).
+    """
+    if not chunk_meta:
+        chunk_meta = {}
+
+    # 1. Изоляция тенанта / клиента
+    req_tenant = tenant_id or (filters.get("tenant_id") or filters.get("client_id") if filters else None)
+    if req_tenant:
+        c_tenant = chunk_meta.get("tenant_id") or chunk_meta.get("client_id") or (chunk_meta.get("company_name", "").strip().lower().replace(" ", "_") if chunk_meta.get("company_name") else "")
+        if not c_tenant or c_tenant.strip().lower() not in {req_tenant.strip().lower(), "global"}:
+            return False
+
+    if not filters:
+        return True
+
+    for k, expected in filters.items():
+        if k in {"tenant_id", "client_id"}:
+            continue
+
+        if hasattr(expected, "value"):
+            expected = expected.value
+
+        actual = chunk_meta.get(k)
+        if actual is None and k == "doc_category":
+            actual = chunk_meta.get("category")
+
+        if actual is None:
+            if k == "platform_target":
+                actual = "all"
+            else:
+                return False
+
+        if hasattr(actual, "value"):
+            actual = actual.value
+
+        # Сравнение списков
+        if isinstance(expected, (list, set, tuple)):
+            exp_set = {str(x.value if hasattr(x, "value") else x).strip().lower() for x in expected}
+            if str(actual).strip().lower() not in exp_set:
+                return False
+        elif isinstance(actual, (list, set, tuple)):
+            act_set = {str(x.value if hasattr(x, "value") else x).strip().lower() for x in actual}
+            if str(expected).strip().lower() not in act_set:
+                return False
+        elif isinstance(expected, str) and isinstance(actual, str):
+            # Если фильтруем платформу, "all" подходит под любую платформу
+            if k == "platform_target" and (actual.lower() == "all" or expected.lower() == "all"):
+                continue
+            if actual.strip().lower() != expected.strip().lower():
+                return False
+        else:
+            if actual != expected:
+                return False
+
+    return True
+
+
 class LocalDenseStore:
     """
     Локальное векторное хранилище с вычислением косинусного сходства
-    и мульти-тенантной фильтрацией по tenant_id.
+    и мульти-тенантной фильтрацией по tenant_id и слоям метаданных.
     """
     def __init__(self, embedding_dim: int = 384):
         self.embedding_dim = embedding_dim
@@ -89,7 +153,13 @@ class LocalDenseStore:
             self.embeddings = new_embeddings
             return deleted
 
-    def search(self, query: str, top_k: int = 10, tenant_id: Optional[str] = None) -> List[Tuple[Chunk, float]]:
+    def search(
+        self,
+        query: str,
+        top_k: int = 10,
+        tenant_id: Optional[str] = None,
+        filters: Optional[Dict[str, Any]] = None
+    ) -> List[Tuple[Chunk, float]]:
         with self._lock:
             if not self.chunks:
                 return []
@@ -98,10 +168,8 @@ class LocalDenseStore:
             scored: List[Tuple[Chunk, float]] = []
             
             for chunk, emb in zip(self.chunks, self.embeddings):
-                if tenant_id:
-                    c_tenant = chunk.metadata.get("tenant_id") or chunk.metadata.get("company_name", "").lower().replace(" ", "_")
-                    if c_tenant and c_tenant.strip().lower() != tenant_id.strip().lower():
-                        continue
+                if not _matches_filters(chunk.metadata, filters=filters, tenant_id=tenant_id):
+                    continue
                 sim = sum(q * e for q, e in zip(q_emb, emb))
                 scored.append((chunk, float(sim)))
                 
@@ -176,7 +244,13 @@ class BM25SparseRetriever:
                 self.avg_doc_length = sum(self.doc_lengths) / self.corpus_size if self.corpus_size > 0 else 0.0
             return deleted
 
-    def search(self, query: str, top_k: int = 10, tenant_id: Optional[str] = None) -> List[Tuple[Chunk, float]]:
+    def search(
+        self,
+        query: str,
+        top_k: int = 10,
+        tenant_id: Optional[str] = None,
+        filters: Optional[Dict[str, Any]] = None
+    ) -> List[Tuple[Chunk, float]]:
         with self._lock:
             if not self.chunks:
                 return []
@@ -198,10 +272,8 @@ class BM25SparseRetriever:
                     if i >= len(self.chunks):
                         continue
                     chunk = self.chunks[i]
-                    if tenant_id:
-                        c_tenant = chunk.metadata.get("tenant_id") or chunk.metadata.get("company_name", "").lower().replace(" ", "_")
-                        if c_tenant and c_tenant.strip().lower() != tenant_id.strip().lower():
-                            continue
+                    if not _matches_filters(chunk.metadata, filters=filters, tenant_id=tenant_id):
+                        continue
                             
                     tf = term_counts.get(token, 0)
                     if tf == 0:
@@ -328,26 +400,45 @@ class HybridRetriever:
         self.sparse_retriever.delete_by_tenant(tenant_id)
         await self.invalidate_cache_async(tenant_id)
 
-    def hybrid_search(self, query: str, top_k: int = 10, tenant_id: Optional[str] = None) -> List[RetrievalResult]:
-        """Синхронный поиск с read-only обращением к кэшу (без Lock — read-only безопасен)."""
-        cache_key = f"{tenant_id.strip().lower() if tenant_id else 'global'}:{query.strip().lower()}:{top_k}"
+    def _make_cache_key(self, query: str, top_k: int, tenant_id: Optional[str] = None, filters: Optional[Dict[str, Any]] = None) -> str:
+        tid = tenant_id.strip().lower() if tenant_id else (filters.get("tenant_id") or filters.get("client_id") or "global" if filters else "global")
+        f_str = ""
+        if filters:
+            f_str = ":" + "_".join(f"{k}={v}" for k, v in sorted(filters.items()) if k not in {"tenant_id", "client_id"})
+        return f"{tid}:{query.strip().lower()}:{top_k}{f_str}"
+
+    def hybrid_search(
+        self,
+        query: str,
+        top_k: int = 10,
+        tenant_id: Optional[str] = None,
+        filters: Optional[Dict[str, Any]] = None
+    ) -> List[RetrievalResult]:
+        """Синхронный поиск с read-only обращением к кэшу и поддержкой Metadata Pre-Filtering."""
+        cache_key = self._make_cache_key(query, top_k, tenant_id, filters)
         if cache_key in self._query_cache:
             return self._query_cache[cache_key]
 
-        final_results = self._compute_hybrid_search(query, top_k, tenant_id)
+        final_results = self._compute_hybrid_search(query, top_k, tenant_id, filters)
         # Запись в кэш (sync-контекст): простой dict — атомарно на GIL уровне
         self._query_cache[cache_key] = final_results
         return final_results
 
-    async def hybrid_search_async(self, query: str, top_k: int = 10, tenant_id: Optional[str] = None) -> List[RetrievalResult]:
+    async def hybrid_search_async(
+        self,
+        query: str,
+        top_k: int = 10,
+        tenant_id: Optional[str] = None,
+        filters: Optional[Dict[str, Any]] = None
+    ) -> List[RetrievalResult]:
         """
-        Директива 7: Асинхронный поиск с Lock-защищённой записью в кэш.
+        Директива 7: Асинхронный поиск с Lock-защищённой записью в кэш и Metadata Pre-Filtering.
         - Cache lookup/write: в event loop (GIL-атомарны, O(1))
         - CPU-bound compute: в ThreadPoolExecutor (не блокирует event loop)
         Использовать вместо hybrid_search() при работе в asyncio-окружении с 50+ concurrent users.
         """
         import asyncio
-        cache_key = f"{tenant_id.strip().lower() if tenant_id else 'global'}:{query.strip().lower()}:{top_k}"
+        cache_key = self._make_cache_key(query, top_k, tenant_id, filters)
 
         # Чтение без Lock — dict.get() атомарен в CPython (GIL), O(1)
         cached = self._query_cache.get(cache_key)
@@ -357,7 +448,7 @@ class HybridRetriever:
         # CPU-bound вычисление → executor, не блокирует event loop
         loop = asyncio.get_running_loop()
         final_results = await loop.run_in_executor(
-            None, self._compute_hybrid_search, query, top_k, tenant_id
+            None, self._compute_hybrid_search, query, top_k, tenant_id, filters
         )
 
         # Директива 7: Lock только при записи — предотвращает dirty-write race condition
@@ -369,10 +460,16 @@ class HybridRetriever:
 
         return self._query_cache.get(cache_key, final_results)
 
-    def _compute_hybrid_search(self, query: str, top_k: int, tenant_id: Optional[str]) -> List[RetrievalResult]:
-        """Вычисление RRF-комбинации Dense + Sparse результатов (без кэширования)."""
-        dense_results = self.dense_store.search(query, top_k=top_k * 2, tenant_id=tenant_id)
-        sparse_results = self.sparse_retriever.search(query, top_k=top_k * 2, tenant_id=tenant_id)
+    def _compute_hybrid_search(
+        self,
+        query: str,
+        top_k: int,
+        tenant_id: Optional[str],
+        filters: Optional[Dict[str, Any]] = None
+    ) -> List[RetrievalResult]:
+        """Вычисление RRF-комбинации Dense + Sparse результатов с pre-filtering."""
+        dense_results = self.dense_store.search(query, top_k=top_k * 2, tenant_id=tenant_id, filters=filters)
+        sparse_results = self.sparse_retriever.search(query, top_k=top_k * 2, tenant_id=tenant_id, filters=filters)
 
         chunk_map: Dict[str, Chunk] = {}
         dense_scores: Dict[str, float] = {}
